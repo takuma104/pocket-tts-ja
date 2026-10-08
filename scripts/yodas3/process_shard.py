@@ -9,7 +9,8 @@ Per video (CPU worker pool):
   4. the speech end (last 80 ms frame within 35 dB of peak)
 Per batch (GPU, main process):
   5. whisper-large-v3-turbo transcription (the label candidate, and the second opinion for
-     the caption-agreement filter applied later by finalize_yodas3.py)
+     the caption-agreement filter applied later by finalize_yodas3.py) — skipped for
+     DNSMOS OVRL < 2.9 and for voices close to --tts-blocklist (known TTS channels)
   6. ECAPA speaker embedding (per-video speaker clustering happens in finalize)
   7. Mimi latents (fp32/TF32, right-padded batches are exact since the encoder is causal)
   8. DNSMOS P.835 (SIG/BAK/OVRL), converted to torch (pocket_tts_ja.dnsmos.TorchDNSMOS)
@@ -215,7 +216,10 @@ def iter_members(tar_path: Path, meta: dict[str, dict[str, Any]]) -> Iterator[tu
 
 
 class GPUStages:
-    def __init__(self, device: torch.device, asr_model: str):
+    def __init__(
+        self, device: torch.device, asr_model: str, blocklist: Path | None = None,
+        block_cos: float = 0.9, min_dnsmos: float = 2.9,
+    ):
         from speechbrain.inference.speaker import EncoderClassifier
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
@@ -231,6 +235,9 @@ class GPUStages:
         from pocket_tts_ja.dnsmos import TorchDNSMOS
 
         self.dnsmos = TorchDNSMOS(device)
+        self.blocklist = np.load(blocklist).astype(np.float32) if blocklist and blocklist.exists() else None
+        self.block_cos = block_cos
+        self.min_dnsmos = min_dnsmos
         self.proc = WhisperProcessor.from_pretrained(asr_model)
         self.asr = WhisperForConditionalGeneration.from_pretrained(
             asr_model, dtype=torch.float16, attn_implementation="sdpa"
@@ -241,11 +248,6 @@ class GPUStages:
         for u in utts:
             u["a24"] = u["a24"].astype(np.float32)
             u["a16"] = soxr.resample(u["a24"], SR24, SR16).astype(np.float32)
-        feats = self.proc.feature_extractor(
-            [u["a16"] for u in utts], sampling_rate=SR16, return_tensors="pt", device=str(self.device)
-        ).input_features.to(self.device, torch.float16)
-        ids = self.asr.generate(feats, language="ja", task="transcribe", max_new_tokens=220)
-        texts = self.proc.batch_decode(ids, skip_special_tokens=True)
         lats: list[npt.NDArray[np.float16]] = []
         embs: list[npt.NDArray[np.float16]] = []
         for sub in _sub_batches(utts, max_padded_sec=120.0):
@@ -267,11 +269,27 @@ class GPUStages:
             )[:, 0]
             embs += list(torch.nn.functional.normalize(emb, dim=-1).half().cpu().numpy())
         mos = self.dnsmos([u["a16"] for u in utts])
+        # Whisper is the expensive stage: skip utterances the later filters drop anyway
+        # (low DNSMOS, or a known mass-produced TTS voice from earlier shards).
+        need = []
         for i, u in enumerate(utts):
-            u["whisper"] = texts[i].strip()
-            u["latents"] = lats[i]
-            u["ecapa"] = embs[i]
+            u["latents"], u["ecapa"] = lats[i], embs[i]
             u["dnsmos_sig"], u["dnsmos_bak"], u["dnsmos_ovrl"] = (round(float(x), 3) for x in mos[i])
+            u["whisper"] = ""
+            tts = (
+                self.blocklist is not None
+                and float((self.blocklist @ embs[i].astype(np.float32)).max()) >= self.block_cos
+            )
+            u["skipped"] = "dnsmos" if u["dnsmos_ovrl"] < self.min_dnsmos else ("tts_voice" if tts else "")
+            if not u["skipped"]:
+                need.append(u)
+        if need:
+            feats = self.proc.feature_extractor(
+                [u["a16"] for u in need], sampling_rate=SR16, return_tensors="pt", device=str(self.device)
+            ).input_features.to(self.device, torch.float16)
+            ids = self.asr.generate(feats, language="ja", task="transcribe", max_new_tokens=220)
+            for u, text in zip(need, self.proc.batch_decode(ids, skip_special_tokens=True), strict=True):
+                u["whisper"] = text.strip()
 
 
 def _sub_batches(utts: list[dict[str, Any]], max_padded_sec: float) -> Iterator[list[dict[str, Any]]]:
@@ -296,6 +314,8 @@ def main():
     parser.add_argument("--batch", type=int, default=48)
     parser.add_argument("--asr-model", default="openai/whisper-large-v3-turbo")
     parser.add_argument("--limit-videos", type=int, default=0)
+    parser.add_argument("--tts-blocklist", type=Path, default=None,
+                        help="mass-voice centroids from finalize_yodas3.py (skip Whisper near them)")
     args = parser.parse_args()
 
     for d in ("latents", "ecapa", "utts"):
@@ -313,7 +333,7 @@ def main():
         if (table["length"][i] or 0) <= MAX_VIDEO_SEC
     }
     print(f"{args.shard}: {len(meta)}/{len(table['id'])} videos <= {MAX_VIDEO_SEC:.0f}s", flush=True)
-    gpu = GPUStages(torch.device("cuda"), args.asr_model)
+    gpu = GPUStages(torch.device("cuda"), args.asr_model, blocklist=args.tts_blocklist)
 
     rows: list[dict[str, Any]] = []
     lat_chunks: list[npt.NDArray[np.float16]] = []

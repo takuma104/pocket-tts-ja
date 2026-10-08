@@ -3,9 +3,11 @@
 Inputs are the per-shard outputs of process_shard.py under --root (utts/*.jsonl, ecapa/*.npy,
 latents/*.npy). For every utterance:
 
-  - caption agreement: CER between the pyopenjtalk readings of the YouTube caption and of
-    the Whisper transcript (pocket_tts_ja.kana); the reading level ignores orthographic
-    variants (時/とき) but catches misrecognitions and boundary words
+  - caption agreement: how well the YouTube caption supports the Whisper transcript, on
+    pyopenjtalk readings with fillers removed (pocket_tts_ja.kana.supported_cer: semi-global
+    alignment, so caption words leaking in from the neighbouring utterance cost nothing).
+    The reading level ignores orthographic variants (時/とき) and number formats (6.08 vs
+    6点0鉢) but catches misrecognitions; Whisper is usually the better of the two
   - label: the Whisper transcript (punctuated, same style as the Emilia transcripts),
     normalized with pocket_tts_ja.text.normalize
 Filters: agreement CER <= --max-cer, DNSMOS OVRL >= --min-dnsmos, 1.5 <= chars/sec <= 15,
@@ -35,7 +37,7 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 from scipy.cluster.hierarchy import fcluster, linkage
 
-from pocket_tts_ja.kana import cer, reading
+from pocket_tts_ja.kana import reading, strip_fillers, supported_cer
 from pocket_tts_ja.text import normalize
 
 
@@ -43,7 +45,8 @@ def score_rows(rows: list[dict[str, Any]]) -> list[tuple[float, str]]:
     out = []
     for r in rows:
         try:
-            out.append((cer(reading(r["caption"]), reading(r["whisper"])), normalize(r["whisper"])))
+            label = strip_fillers(reading(r["whisper"]))
+            out.append((supported_cer(label, strip_fillers(reading(r["caption"]))), normalize(r["whisper"])))
         except Exception:  # noqa: BLE001 - pyopenjtalk rejects some inputs
             out.append((1.0, ""))
     return out
@@ -138,6 +141,13 @@ def main():
                     flagged.add(a + r)
     stats["drop_mass_voice_utts"] = sum(len(clusters[c][2]) for c in flagged)
     stats["mass_voice_clusters"] = len(flagged)
+    if flagged:
+        np.save(args.root / "mass_voice_centroids.npy", cent[sorted(flagged)].astype(np.float16))
+    with open(args.root / "mass_voice_samples.jsonl", "w", encoding="utf-8") as f:
+        for c in sorted(flagged)[:200]:
+            video, k, m = clusters[c]
+            f.write(json.dumps({"video": video, "k": k, "n": len(m),
+                                "texts": [rows[i]["transcript"] for i in m[:3]]}, ensure_ascii=False) + "\n")
 
     out: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
     spk_sizes = []
