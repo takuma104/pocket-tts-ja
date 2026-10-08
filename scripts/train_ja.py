@@ -61,8 +61,15 @@ def main(config_path: str):
     tt.ProgressLog = make_progress_log_cls(args.run_dir, yaml.safe_load(dump_args(args)))
     tt.save_checkpoint = save_checkpoint_with_snapshot
     tt.main(config_path)
+    import wandb
+
+    if wandb.run is not None:
+        wandb.finish()
 
 
 if __name__ == "__main__":
     assert len(sys.argv) == 2, "usage: train_ja.py <config.yaml>"
     main(sys.argv[1])
+    # Loader subprocesses and wandb's service can keep the interpreter alive after training
+    # finished (holding GPU memory); everything is saved by now.
+    os._exit(0)

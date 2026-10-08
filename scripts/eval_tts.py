@@ -234,15 +234,28 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--jvs-speakers", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=0, help="first N items only (smoke tests)")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
     snap, step = snapshot_path(args.run_dir, args.snapshot)
     tag = f"{args.set}_{args.voice}_cfg{args.cfg}" + (f"_n{args.jvs_speakers}" if args.set == "jvs" else "")
+    if args.limit:
+        tag += f"_limit{args.limit}"
     out_dir = args.run_dir / "eval" / f"step{step:08d}" / tag
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     items, dataset = build_items(args.set, args.voice, args.jvs_speakers)
+    if args.limit:
+        items = items[: args.limit]
+        if dataset is not None:
+            keys = {it["key"] for it in items}
+            subset = out_dir / "dataset_subset.jsonl"
+            with open(dataset) as src, open(subset, "w") as dst:
+                for line in src:
+                    if json.loads(line)["key"] in keys:
+                        dst.write(line)
+            dataset = subset
 
     device = torch.device("cuda")
     model, mimi = load_model(args.run_dir, snap, device)

@@ -133,6 +133,8 @@ def quality_reason(text: str, *, min_len: int = 8, max_len: int = 80) -> str | N
         return "no_kana_kanji"
     if not all(map(is_allowed_char, text)):
         return "rare_chars"
+    if any(ch in "<>＜＞" for ch in text):
+        return "tag_chars"  # would clash with the <target> tag syntax
     if len(LATIN.findall(text)) > 0.15 * len(text):
         return "latin_heavy"
     if URL.search(text):

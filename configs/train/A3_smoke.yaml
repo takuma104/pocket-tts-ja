@@ -31,8 +31,8 @@ optim:
   warmup_steps: 100
 
 run_dir: runs/A3_smoke
-batch_size: 8
-grad_accum_steps: 2
+batch_size: 16
+grad_accum_steps: 4
 max_steps: 300
 stats_ema_steps: 1000
 ema_decay: 0.999

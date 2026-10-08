@@ -13,13 +13,26 @@ Writes to ``data/synth/``:
   ``syn_<source>_<n>``), ``text`` (raw, as it should be read), ``yomi`` (katakana
   sentence reading, JKYB convention: は/へ particles read ワ/エ), ``tagged_text`` /
   ``tagged_yomi`` / ``readings`` / ``reading_category`` (JKYB fields, or null),
-  ``source``, ``group`` (i/ii/iii), ``word`` (target word or null) and, for Irodori
-  rows, ``orig_key``.
+  ``source``, ``group`` (i/ii/iii), ``word`` (target word or null),
+  ``analyzers_agree`` (UniDic and Sudachi agree on every kanji span outside the
+  targets, i.e. the non-target part of ``yomi`` is probably right; always true for
+  ii/iii, which are filtered on it) and, for (i), ``orig_key`` (Irodori row key) and
+  ``extra_targets`` (further tagged words of the same sentence, JKYB-style dicts with
+  their own ``key`` = ``<id>__t<k>``). (iii) rows also have ``style``.
 - ``texts_tagged_jkyb.jsonl``: the tagged rows only, in the exact JKYB-Parakeet schema
   (``key, text, tagged_text, yomi, tagged_yomi, reading_category, readings, source``),
   usable as ``jkyb-eval tts --dataset`` for the QC of the synthesized audio.
+- ``texts_tagged_jkyb_extra.jsonl``: the extra targets in the same schema. jkyb-eval
+  finds audio by key, so score them with ``jkyb-eval g2p`` on the kana-whisper
+  transcripts of ``<id>`` re-keyed to ``<id>__t<k>``.
 - ``texts_stats.md`` and ``texts_removal.json``: counts, removal statistics.
-- ``work/``: the analysis cache of the Wikipedia pool and the jkyb-eval self-check.
+- ``work/``: the analysis cache of the Wikipedia pool and the jkyb-eval self-check
+  (``work/jkyb_g2p_check/report.txt``: the rows' own yomi must score 100%).
+
+For (i), rows with the same text are merged into one sentence: its yomi is the plain
+Sudachi reading with every row's target reading (ruby / dictionary) applied. A row whose
+Irodori yomi differs from the plain Sudachi reading outside its own tagged span is
+dropped (``yomi_inconsistent``, a construction bug such as ``<取>組`` -> トリク).
 
 Sources:
 
@@ -34,10 +47,13 @@ Sources:
     tagged. See ``synth_wiki.py`` for the analysis (Sudachi yomi, UniDic agreement).
 (iii) Plain or conversational-looking Wikipedia sentences without the rarity rule.
 
-Leakage control: exact / 5-gram Jaccard >= 0.6 / shared 15-char substring against
-JKYB-Parakeet, the Irodori Aozora and JSUT evaluation rows and the JVS transcripts
-(``synth_leakage.py``); Aozora rows from evaluation works are dropped; texts are
-deduplicated across sources (priority i > ii > iii).
+Leakage control: exact / character 5-gram or 3-gram Jaccard >= 0.6 / shared 15-char
+substring against JKYB-Parakeet, the Irodori Aozora and JSUT evaluation rows and the
+JVS transcripts (``synth_leakage.py``); Aozora rows from evaluation works are dropped;
+texts are deduplicated across sources (priority i > ii > iii).
+
+The quota of (ii) is ``max(--rare-min, --total - |i| - --general)``, so (ii) fills
+whatever (i) leaves of the total.
 """
 
 from __future__ import annotations
@@ -274,17 +290,97 @@ def emilia_texts(path: Path) -> list[str]:
 # --------------------------------------------------------------------------- (i)
 
 
+@dataclass
+class AlignedTarget:
+    """One Irodori row's target, placed on the plain Sudachi reading ``S`` of its text."""
+
+    row: dict[str, Any] | None  # None for a convention fix (not a target)
+    source: str
+    s_start: int  # tag region in S coordinates
+    s_end: int
+    reading: str  # the row's tagged reading, which replaces S[s_start:s_end]
+
+    @property
+    def is_target(self) -> bool:
+        return self.row is not None
+
+
+def align_target(plain_yomi: str, raw: dict[str, Any]) -> AlignedTarget | None:
+    """Place the row's target on ``plain_yomi``, or None when the row's yomi is inconsistent.
+
+    The row's yomi must equal the plain Sudachi reading everywhere outside its tagged
+    reading (Irodori built it that way). Rows that differ elsewhere carry a construction
+    bug, e.g. ``<取>組`` read トリク instead of トリクミ, ``<九>十九折`` read ツヅラオ.
+    """
+    yomi, tagged = raw["yomi"], raw["tagged_yomi"]
+    ta, tb = tagged.index("<"), tagged.index(">") - 1
+    if yomi != plain_yomi:
+        limit = min(len(yomi), len(plain_yomi))
+        p = 0
+        while p < limit and yomi[p] == plain_yomi[p]:
+            p += 1
+        q = 0
+        while q < limit - p and yomi[-1 - q] == plain_yomi[-1 - q]:
+            q += 1
+        if p < ta or len(yomi) - q > tb:
+            return None
+    delta = len(yomi) - len(plain_yomi)
+    return AlignedTarget(raw, "", ta, tb - delta, yomi[ta:tb])
+
+
+def merge_targets(
+    plain_yomi: str, targets: list[AlignedTarget]
+) -> tuple[str, list[tuple[AlignedTarget, int]], list[AlignedTarget]]:
+    """Sentence reading with every non-overlapping target applied.
+
+    Returns (merged yomi, [(target, offset of its reading in the merged yomi)] in input
+    order, rejected targets). Targets are accepted in input order; one whose region
+    overlaps an accepted one is rejected (same word twice, or conflicting readings).
+    """
+    accepted: list[AlignedTarget] = []
+    rejected: list[AlignedTarget] = []
+    for target in targets:
+        if any(target.s_start < a.s_end and a.s_start < target.s_end for a in accepted):
+            rejected.append(target)
+        else:
+            accepted.append(target)
+    pieces: list[str] = []
+    offsets: dict[int, int] = {}
+    cursor = 0
+    length = 0
+    for target in sorted(accepted, key=lambda t: t.s_start):
+        pieces.append(plain_yomi[cursor : target.s_start])
+        length += target.s_start - cursor
+        offsets[id(target)] = length
+        pieces.append(target.reading)
+        length += len(target.reading)
+        cursor = target.s_end
+    pieces.append(plain_yomi[cursor:])
+    return "".join(pieces), [(t, offsets[id(t)]) for t in accepted], rejected
+
+
 def build_production(
     args: argparse.Namespace,
     leakage: LeakageIndex,
     seen: set[str],
     removal: Removal,
 ) -> list[dict[str, Any]]:
+    """Rows of source (i); other tagged words of the same text go to ``extra_targets``.
+
+    Per-row rules first (quality, Aozora evaluation works, leakage). Rows with the same
+    text are then merged into one sentence: the yomi is the plain Sudachi reading with
+    every row's target reading applied, the first row's target is the row's tag and the
+    others become ``extra_targets``.
+    """
+    from synth_wiki import _init_worker, agree_outside, plain_sudachi_yomi
+
+    _init_worker(args.unidic_dir)
+
     eval_works = set(
         json.loads((args.irodori / "data/yomi/aozora_eval_rows.works.json").read_text())["works"]
     )
     works = aozora_work_ids(args.irodori)
-    rows: list[dict[str, Any]] = []
+    groups: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for source, filename in PRODUCTION_FILES.items():
         n_in = 0
         for raw in read_jsonl(args.irodori / "data/yomi" / filename):
@@ -298,8 +394,6 @@ def build_production(
                 if fixed is not None and quality_reason(fixed["text"]) is None:
                     removal.add("i_repaired", source, "lone_quote_stripped")
                     raw, reason = fixed, None
-            if reason is None and not yomi_ok(raw["yomi"]):
-                reason = "bad_yomi"
             if reason is None and not normalize(raw["text"]):
                 reason = "normalize_empty"
             if reason is None and source.startswith("aozora"):
@@ -312,35 +406,86 @@ def build_production(
                 leak = leakage.check(raw["text"])
                 if leak is not None:
                     reason = f"leak_{leak[0]}:{leak[1]}"
-            if reason is None:
-                key = leak_key(raw["text"])
-                if key in seen:
-                    reason = "duplicate_text"
-                else:
-                    seen.add(key)
             if reason is not None:
                 removal.add("i", source, reason)
                 continue
-            row = output_row(
-                source=source,
-                group="i",
-                text=raw["text"],
-                yomi=raw["yomi"],
-                word=raw.get("word"),
-                tagged_text=raw.get("tagged_text"),
-                tagged_yomi=raw.get("tagged_yomi"),
-                readings=raw.get("readings"),
-                reading_category=raw.get("reading_category"),
-                orig_key=raw["key"],
-            )
-            error = jkyb_error({**row, "key": "x"})
-            if error is not None:
-                removal.add("i_tags_dropped", source, error)
-                for name in ("tagged_text", "tagged_yomi", "readings", "reading_category"):
-                    row[name] = None
-            rows.append(row)
+            groups.setdefault(raw["text"], []).append((source, raw))
         removal.add("i_input", source, "rows", n_in)
-        print(f"(i) {source}: {n_in:,} rows read, total kept so far {len(rows):,}", flush=True)
+        print(f"(i) {source}: {n_in:,} rows read", flush=True)
+
+    rows: list[dict[str, Any]] = []
+    for text, members in groups.items():
+        plain_yomi, fixes = plain_sudachi_yomi(text)
+        aligned: list[AlignedTarget] = []
+        for source, raw in members:
+            target = align_target(plain_yomi, raw)
+            if target is None:
+                removal.add("i", source, "yomi_inconsistent")
+                continue
+            target.source = source
+            aligned.append(target)
+        if not aligned:
+            continue
+        # Convention fixes (私 -> ワタシ) last, so that a target on the same word wins.
+        conventions = [AlignedTarget(None, "", a, b, r) for a, b, r in fixes]
+        yomi, accepted, rejected = merge_targets(plain_yomi, aligned + conventions)
+        accepted = [(t, o) for t, o in accepted if t.is_target]
+        rejected = [t for t in rejected if t.is_target]
+        if not yomi_ok(yomi):
+            for target in aligned:
+                removal.add("i", target.source, "bad_yomi")
+            continue
+        key = leak_key(text)
+        if key in seen:
+            for target in aligned:
+                removal.add("i", target.source, "duplicate_text")
+            continue
+        seen.add(key)
+        for target in rejected:
+            removal.add("i", target.source, "duplicate_text")
+        tagged: list[dict[str, Any]] = []
+        for target, offset in accepted:
+            raw = target.row
+            item = {
+                "tagged_text": raw["tagged_text"],
+                "tagged_yomi": f"{yomi[:offset]}<{target.reading}>{yomi[offset + len(target.reading):]}",
+                "readings": raw["readings"],
+                "reading_category": raw["reading_category"],
+                "word": raw.get("word"),
+                "orig_key": raw["key"],
+                "source": target.source,
+            }
+            error = jkyb_error({**item, "key": "x", "text": text, "yomi": yomi})
+            if error is not None:
+                removal.add("i_tag_invalid", target.source, error)
+                continue
+            tagged.append(item)
+        primary = tagged[0] if tagged else None
+        primary_source = primary["source"] if primary else accepted[0][0].source
+        row = output_row(
+            source=primary_source,
+            group="i",
+            text=text,
+            yomi=yomi,
+            word=(primary or {}).get("word", accepted[0][0].row.get("word")),
+            tagged_text=primary["tagged_text"] if primary else None,
+            tagged_yomi=primary["tagged_yomi"] if primary else None,
+            readings=primary["readings"] if primary else None,
+            reading_category=primary["reading_category"] if primary else None,
+            orig_key=primary["orig_key"] if primary else accepted[0][0].row["key"],
+        )
+        spans = []
+        for item in tagged:
+            a = item["tagged_text"].index("<")
+            spans.append((a, item["tagged_text"].index(">") - 1))
+        # UniDic = Sudachi outside the targets: the rest of the yomi is likely right.
+        row["analyzers_agree"] = agree_outside(text, spans)
+        if len(tagged) > 1:
+            row["extra_targets"] = tagged[1:]
+            for item in tagged[1:]:
+                removal.add("i_merged", item["source"], "kept_as_extra_target")
+        rows.append(row)
+    print(f"(i) kept {len(rows):,} sentences, {sum(len(r.get('extra_targets', [])) for r in rows):,} extra targets", flush=True)
     return rows
 
 
@@ -455,6 +600,10 @@ def scan_pool(
     for record in read_jsonl(cache):
         text = record["t"]
         pool_counts["analyzed_ok"] += 1
+        recheck = prefilter(text)  # the cache may predate a filter change
+        if recheck is not None:
+            pool_counts[f"prefilter_recheck:{recheck}"] += 1
+            continue
         if leak_key(text) in seen:
             pool_counts["duplicate_of_i"] += 1
             continue
@@ -531,6 +680,7 @@ def select_rare(
                     readings={"natural": [best.reading], "marginal": []},
                     reading_category=best.category,
                 )
+                | {"analyzers_agree": True}
             )
         print(f"(ii) after cap {cap}: {len(chosen):,} sentences", flush=True)
         if len(chosen) >= quota:
@@ -565,6 +715,7 @@ def select_general(
                 continue
             seen.add(key)
             row = output_row(source="wiki_general", group="iii", text=text, yomi=yomi, word=None)
+            row["analyzers_agree"] = True
             row["style"] = style
             chosen.append(row)
 
@@ -632,14 +783,32 @@ def write_stats(path: Path, rows: list[dict[str, Any]], removal: Removal, args: 
          r["readings"]["natural"][0])
         for r in tagged_all
     }
+    extras = [e for r in rows for e in r.get("extra_targets", [])]
+    words_all = {r["word"] for r in tagged_all} | {e["word"] for e in extras}
+    pairs_all = target_pairs | {
+        (e["tagged_text"][e["tagged_text"].index("<") + 1 : e["tagged_text"].index(">")],
+         e["readings"]["natural"][0])
+        for e in extras
+    }
     lines += [
         "",
         f"- Tagged rows: {len(tagged_all):,} ({len(tagged_all) / len(rows):.1%}); "
         f"distinct target words (`word`): {len({r['word'] for r in tagged_all}):,}; "
         f"distinct (tagged span, reading) pairs: {len(target_pairs):,}",
+        f"- Extra targets (further tagged words of the same (i) sentence, `extra_targets`, "
+        f"`texts_tagged_jkyb_extra.jsonl`): {len(extras):,} in "
+        f"{sum(1 for r in rows if r.get('extra_targets')):,} sentences; with them, distinct target "
+        f"words {len(words_all):,} and (span, reading) pairs {len(pairs_all):,}",
         f"- Reading categories of tagged rows: "
         + ", ".join(f"{k} {v:,}" for k, v in Counter(r["reading_category"] for r in tagged_all).most_common()),
     ]
+    for group in ("i", "ii", "iii"):
+        items = [r for r in rows if r["group"] == group]
+        n_agree = sum(1 for r in items if r.get("analyzers_agree"))
+        lines.append(
+            f"- ({group}) UniDic and Sudachi agree on every kanji span outside the targets "
+            f"(`analyzers_agree`): {n_agree:,} / {len(items):,} ({n_agree / max(len(items), 1):.1%})"
+        )
     styles = Counter(r.get("style") for r in rows if r["group"] == "iii")
     lines.append(
         "- (iii) styles: " + ", ".join(f"{k} {v:,}" for k, v in styles.most_common())
@@ -678,8 +847,8 @@ def write_stats(path: Path, rows: list[dict[str, Any]], removal: Removal, args: 
     in_tags: set[str] = set()
     for r in rows:
         in_text.update(ch for ch in r["text"] if ch in joyo)
-        if r["tagged_text"]:
-            span = r["tagged_text"][r["tagged_text"].index("<") + 1 : r["tagged_text"].index(">")]
+        for item in ([r] if r["tagged_text"] else []) + r.get("extra_targets", []):
+            span = item["tagged_text"][item["tagged_text"].index("<") + 1 : item["tagged_text"].index(">")]
             in_tags.update(ch for ch in span if ch in joyo)
     missing = sorted(joyo - in_text)
     all_kanji = {ch for r in rows for ch in r["text"] if KANJI.match(ch)}
@@ -697,12 +866,18 @@ def write_stats(path: Path, rows: list[dict[str, Any]], removal: Removal, args: 
 
     lines += ["", "## Removal statistics", ""]
     lines += [
-        "Rules are applied in order and each removed sentence is counted once, under the first",
-        "rule that fired: quality (`length`, `rare_chars`, `latin_heavy`, `url`,",
-        "`unbalanced_brackets`, `multi_digit_number`, `bad_yomi`, `normalize_empty`), then",
-        "`aozora_eval_work`, then leakage (`leak_exact`, `leak_jaccard` = 5-gram Jaccard >= 0.6,",
-        "`leak_substring` = shared >= 15 chars; the label after `:` is the evaluation set), then",
-        "`duplicate_text` (normalized text already taken by an earlier source).",
+        "Rules are applied in order and each removed row is counted once, under the first rule",
+        "that fired: quality (`length`, `rare_chars`, `tag_chars`, `latin_heavy`, `url`, `unbalanced_brackets`,",
+        "`multi_digit_number`, `normalize_empty`), then `aozora_eval_work`, then leakage",
+        "(`leak_exact`, `leak_jaccard5` / `leak_jaccard3` = character 5-/3-gram Jaccard >= 0.6,",
+        "`leak_substring` = shared >= 15 chars, all after NFKC and removing punctuation/spaces;",
+        "the label after `:` is the evaluation set). For (i), rows with the same text are then",
+        "merged: `yomi_inconsistent` = the Irodori yomi differs from the plain Sudachi reading",
+        "outside its tagged span (a row-construction bug), `bad_yomi` = the merged reading still has",
+        "non-katakana, `duplicate_text` = the same target region again or the normalized text",
+        "already taken by an earlier source; `i_merged` counts rows kept as extra targets.",
+        "Pool stages (`pool_*`) count Wikipedia sentences before selection; `ii`/`iii` count",
+        "candidates rejected during selection.",
         "",
     ]
     data = removal.to_json()
@@ -735,24 +910,39 @@ def write_stats(path: Path, rows: list[dict[str, Any]], removal: Removal, args: 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_jkyb_check(args: argparse.Namespace, tagged_path: Path, rows: list[dict[str, Any]]) -> str:
-    """Score a sample of the tagged rows' own yomi with ``jkyb-eval g2p`` (expects ~100%)."""
+def run_jkyb_check(
+    args: argparse.Namespace,
+    tagged_path: Path,
+    rows: list[dict[str, Any]],
+    extra_path: Path,
+    extra_rows: list[dict[str, Any]],
+) -> str:
+    """Score the tagged rows' own yomi with ``jkyb-eval g2p`` (expects 100%).
+
+    1. ``sample``: a random sample of ``--jkyb-check-rows`` rows as its own dataset.
+    2. ``full``: every row of ``texts_tagged_jkyb.jsonl`` (loading it validates the
+       schema of all rows), predictions = the rows' own yomi.
+    3. ``extra``: the same for ``texts_tagged_jkyb_extra.jsonl``.
+    """
     work = args.out_dir / "work" / "jkyb_g2p_check"
     work.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
     sample = rng.sample(rows, min(args.jkyb_check_rows, len(rows)))
     write_jsonl(work / "dataset_sample.jsonl", sample)
-    write_jsonl(work / "predictions.jsonl", [{"key": r["key"], "yomi": r["yomi"]} for r in sample])
+    write_jsonl(work / "pred_sample.jsonl", [{"key": r["key"], "yomi": r["yomi"]} for r in sample])
+    write_jsonl(work / "pred_full.jsonl", [{"key": r["key"], "yomi": r["yomi"]} for r in rows])
+    write_jsonl(work / "pred_extra.jsonl", [{"key": r["key"], "yomi": r["yomi"]} for r in extra_rows])
     project = REPO / "third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition"
     outputs = []
-    for name, dataset, extra in (
-        ("sample", work / "dataset_sample.jsonl", []),
-        ("full_dataset_allow_missing", tagged_path, ["--allow-missing"]),
+    for name, dataset in (
+        ("sample", work / "dataset_sample.jsonl"),
+        ("full", tagged_path),
+        ("extra", extra_path),
     ):
         cmd = [
             "uv", "run", "--project", str(project), "jkyb-eval", "g2p",
-            str(work / "predictions.jsonl"), "--dataset", str(dataset),
-            "--output-dir", str(work / name), *extra,
+            str(work / f"pred_{name}.jsonl"), "--dataset", str(dataset),
+            "--output-dir", str(work / name),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
         outputs.append(f"$ {' '.join(cmd)}\n{result.stdout}{result.stderr[-2000:]}")
@@ -779,9 +969,9 @@ def main() -> int:
     parser.add_argument("--general", type=int, default=30_000)
     parser.add_argument("--rare-min", type=int, default=50_000)
     parser.add_argument("--rare-max-count", type=int, default=3, help="rare: Emilia count < this")
-    parser.add_argument("--max-per-word", type=int, default=3)
+    parser.add_argument("--max-per-word", type=int, default=5)
     parser.add_argument("--conv-share", type=float, default=0.5)
-    parser.add_argument("--workers", type=int, default=10)
+    parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument(
@@ -829,24 +1019,34 @@ def main() -> int:
         assert normalize(row["text"]), row
         assert yomi_ok(row["yomi"]), row
     tagged = [r for r in rows if r["tagged_text"] is not None]
-    errors = Counter(e for r in tagged if (e := jkyb_error(r)) is not None)
-    assert not errors, errors
+    bad = [(e, r["id"], r["tagged_text"]) for r in tagged if (e := jkyb_error(r)) is not None]
+    assert not bad, bad[:10]
     jkyb_rows = [{name: r[name] for name in JKYB_FIELDS} for r in tagged]
+    extra_rows: list[dict[str, Any]] = []
+    for row in rows:
+        for k, item in enumerate(row.get("extra_targets", []), start=1):
+            item["key"] = f"{row['id']}__t{k}"
+            extra = {**item, "text": row["text"], "yomi": row["yomi"]}
+            extra_rows.append({name: extra[name] for name in JKYB_FIELDS})
+    bad = [(e, r["key"], r["tagged_text"]) for r in extra_rows if (e := jkyb_error(r)) is not None]
+    assert not bad, bad[:10]
 
     write_jsonl(args.out_dir / "texts.jsonl", rows)
     tagged_path = args.out_dir / "texts_tagged_jkyb.jsonl"
     write_jsonl(tagged_path, jkyb_rows)
+    extra_path = args.out_dir / "texts_tagged_jkyb_extra.jsonl"
+    write_jsonl(extra_path, extra_rows)
     (args.out_dir / "texts_removal.json").write_text(
         json.dumps(removal.to_json(), ensure_ascii=False, indent=1), encoding="utf-8"
     )
     write_stats(args.out_dir / "texts_stats.md", rows, removal, args)
     print(
-        f"wrote {len(rows):,} rows ({len(jkyb_rows):,} tagged) to {args.out_dir} "
+        f"wrote {len(rows):,} rows ({len(jkyb_rows):,} tagged, {len(extra_rows):,} extra targets) to {args.out_dir} "
         f"({time.time() - t0:.0f}s)",
         flush=True,
     )
     if not args.skip_jkyb_check:
-        print(run_jkyb_check(args, tagged_path, jkyb_rows), flush=True)
+        print(run_jkyb_check(args, tagged_path, jkyb_rows, extra_path, extra_rows), flush=True)
     return 0
 
 

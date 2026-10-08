@@ -10,7 +10,8 @@ Steps (driven by ``build_texts.py``):
    on the reading of every kanji span. Spans are cut where both segmentations have a
    boundary, as in Irodori-TTS-Experiments ``scripts/analyze_reading_agreement.py``.
    The reading is the one of Irodori's ``prepare_yomi_rows.py``: Sudachi mode C
-   ``reading_form`` with the particles は/へ read as ワ/エ. Results are cached as JSONL.
+   ``reading_form`` with the particles は/へ read as ワ/エ, plus the JKYB convention
+   私 = ワタシ (``CONVENTION``). Results are cached as JSONL.
 3. ``count_in_corpus``: occurrences of candidate word stems in the training transcripts
    (Emilia JA), with Aho-Corasick.
 4. Rare-word sentences (``RareCandidate``) and general sentences (``GeneralCandidate``)
@@ -121,6 +122,28 @@ def _kanji_spans_agree(
     return True
 
 
+def agree_outside(text: str, skip: list[tuple[int, int]]) -> bool:
+    """UniDic and Sudachi agree on every kanji span that does not overlap ``skip``.
+
+    ``skip``: character ranges of the text (the tagged targets, whose readings come from
+    ruby or the dictionary). Needs ``_init_worker`` in the calling process.
+    """
+    sud = [(m.begin(), m.end(), m.reading_form()) for m in _SUDACHI.tokenize(text, _SPLIT_C)]
+    uni = _unidic_tokens(text)
+    if uni is None:
+        return False
+    common = sorted({e for _, e, _ in uni} & {e for _, e, _ in sud})
+    start = 0
+    for end in common:
+        if KANJI.search(text[start:end]) and not any(start < b and a < end for a, b in skip):
+            u = "".join(r for s, e, r in uni if start <= s and e <= end)
+            d = "".join(r for s, e, r in sud if start <= s and e <= end)
+            if u != d:
+                return False
+        start = end
+    return True
+
+
 def analyze(text: str) -> tuple[str, dict[str, Any] | None]:
     """(status, record). The record holds the sentence reading and its kanji words."""
     sud: list[tuple[int, int, str]] = []
@@ -134,8 +157,7 @@ def analyze(text: str) -> tuple[str, dict[str, Any] | None]:
         reading = m.reading_form()
         pos = m.part_of_speech()
         sud.append((m.begin(), m.end(), reading))
-        if pos[0] == "助詞" and surface in ("は", "へ"):
-            reading = {"は": "ワ", "へ": "エ"}[surface]
+        reading = convention_reading(surface, pos[0], reading)
         if KANJI.search(surface) and pos[0] in CONTENT_POS and pos[1] not in EXCLUDED_POS1:
             words.append(
                 [m.begin(), m.end(), surface, reading, m.dictionary_form(), pos[0], pos[1], offset]
@@ -196,6 +218,49 @@ def analyze_pool(
                 print(f"  analyzed {done:,}/{len(items):,} {dict(counts)}", flush=True)
     tmp.replace(cache)
     return counts
+
+
+_PLAIN: Any = None
+
+# Readings where the analyzers' default differs from the JKYB convention: JKYB writes the
+# pronoun 私 as ワタシ (593 of 593 sentences), Sudachi and UniDic give ワタクシ.
+CONVENTION = {("私", "代名詞"): "ワタシ"}
+
+
+def convention_reading(surface: str, pos0: str, reading: str) -> str:
+    """Sentence-yomi reading of a morpheme: は/へ particles as ワ/エ, JKYB conventions."""
+    if pos0 == "助詞" and surface in ("は", "へ"):
+        return "ワ" if surface == "は" else "エ"
+    return CONVENTION.get((surface, pos0), reading)
+
+
+def plain_sudachi_yomi(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """Sudachi mode-C reading of ``text`` with は/へ as ワ/エ, and the convention fixes.
+
+    Returns (reading, fixes): ``fixes`` are (start, end, replacement) ranges of the
+    reading where a JKYB convention (``CONVENTION``) differs from the analyzer default;
+    they are applied by the caller (so that Irodori rows, built with the default, can
+    still be compared with the plain reading).
+    """
+    global _PLAIN
+    if _PLAIN is None:
+        from sudachipy import Dictionary, SplitMode
+
+        _PLAIN = (Dictionary().tokenizer(), SplitMode.C)
+    tokenizer, mode = _PLAIN
+    out: list[str] = []
+    fixes: list[tuple[int, int, str]] = []
+    offset = 0
+    for m in tokenizer.tokenize(text, mode):
+        surface, pos0, reading = m.surface(), m.part_of_speech()[0], m.reading_form()
+        if pos0 == "助詞" and surface in ("は", "へ"):
+            reading = convention_reading(surface, pos0, reading)
+        fixed = CONVENTION.get((surface, pos0))
+        if fixed is not None and fixed != reading:
+            fixes.append((offset, offset + len(reading), fixed))
+        out.append(reading)
+        offset += len(reading)
+    return "".join(out), fixes
 
 
 # --------------------------------------------------------------------------- lexicon

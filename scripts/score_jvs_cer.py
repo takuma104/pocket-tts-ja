@@ -36,7 +36,7 @@ def main():
         )
 
     def mean(vals: list[float]) -> float:
-        return sum(vals) / max(1, len(vals))
+        return sum(vals) / len(vals) if vals else float("nan")
 
     out = {
         "kana_cer@1": mean([r["kana"] for r in rows if r["kana"] is not None]),

@@ -24,8 +24,10 @@ python3 scripts/synth/make_synth_input.py data/eval/jkyb_mini.jsonl "$OUT/input.
   --input "$OUT/input.jsonl" --output-dir "$OUT/audio" --log-dir "$OUT/synth_logs" \
   --checkpoint "$CKPT" "$@" > "$OUT/logs/synth.log" 2>&1
 
+# Python 3.13 like the local env: under 3.14 the ASR DataLoader fails to pickle its
+# workers (forkserver) and jkyb-eval aborts with "ASR failed after transcribing 0".
 /usr/bin/time -v -o "$OUT/logs/eval.time" \
-  "$UV" run --project "$JKYB" --extra asr jkyb-eval tts "$OUT/audio" \
+  "$UV" run --python 3.13 --project "$JKYB" --extra asr jkyb-eval tts "$OUT/audio" \
   --dataset data/eval/jkyb_mini.jsonl --device cuda --output-dir "$OUT/results" \
   > "$OUT/logs/eval.log" 2>&1
 tail -8 "$OUT/logs/eval.log"

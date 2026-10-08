@@ -8,7 +8,8 @@ inference config reproduces with `replace_characters`. Differences:
   - required_chars: every Joyo kanji, all kana, printable ASCII, plus any character seen at
     least --min-char-count times in the training text. Characters in the required set never
     fall back to bytes (byte-fallback kanji were the hardest to learn in the Irodori study).
-  - character_coverage 0.9999 for the rest.
+  - --character-coverage (0.9999) for the rest; train only on text that has audio
+    (transcripts + the synthetic corpus), so web text does not inflate the alphabet.
   - inputs: the training manifests' `transcript` fields and optional extra text files
     (one normalized or raw sentence per line, or jsonl with a "text" field, e.g. the
     synthetic-data corpus), so rare kanji of the synthetic sentences get their own pieces.
@@ -57,7 +58,8 @@ def main():
     parser.add_argument("inputs", type=Path, nargs="+")
     parser.add_argument("--vocab-size", type=int, default=8000)
     parser.add_argument("--out", type=str, required=True, help="writes <out>.model / <out>.vocab")
-    parser.add_argument("--min-char-count", type=int, default=20)
+    parser.add_argument("--min-char-count", type=int, default=100)
+    parser.add_argument("--character-coverage", type=float, default=0.9999)
     args = parser.parse_args()
 
     texts = iter_texts(args.inputs)
@@ -76,7 +78,7 @@ def main():
         input=corpus,
         model_prefix=args.out,
         vocab_size=args.vocab_size,
-        character_coverage=0.9999,
+        character_coverage=args.character_coverage,
         model_type="unigram",
         normalization_rule_name="identity",
         remove_extra_whitespaces=False,
