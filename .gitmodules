@@ -1,0 +1,6 @@
+[submodule "third-party/pocket-tts"]
+	path = third-party/pocket-tts
+	url = https://github.com/kyutai-labs/pocket-tts
+[submodule "third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition"]
+	path = third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition
+	url = https://github.com/Parakeet-Inc/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition.git
