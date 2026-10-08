@@ -1,0 +1,49 @@
+# A5 pilot (plan §5): real data only, 24-layer LSD teacher warm-started from the English
+# 24L model, fresh text embedding for the 8k Japanese tokenizer. 15k steps at effective
+# batch 64 (16 x 4 accumulation, one RTX 5090). Run with scripts/train_ja.py.
+model_config: configs/model/tmp_ja_24l_8k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/emilia_ja/train.jsonl
+  valid_jsonl: data/emilia_ja/valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed by scripts/precompute_emilia_ja.py
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 100
+
+run_dir: runs/A3_smoke
+batch_size: 8
+grad_accum_steps: 2
+max_steps: 300
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 150
+num_valid_batches: 10
+ckpt_freq: 300
+num_ckpt_keep: 2
+sample_freq: 300
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."

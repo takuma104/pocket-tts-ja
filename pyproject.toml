@@ -13,9 +13,11 @@ dependencies = [
     "sentencepiece>=0.2.2",
     "soundfile>=0.14.0",
     "soxr>=1.1.0",
+    "speechbrain>=1.1.1",
     "sphn>=0.2.1",
     "torchaudio>=2.11.0",
     "tqdm>=4.70.1",
+    "wandb>=0.30.0",
 ]
 
 [tool.uv.workspace]
