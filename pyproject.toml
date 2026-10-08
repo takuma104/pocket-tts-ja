@@ -1,9 +1,31 @@
 [project]
 name = "pocket-tts-ja"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Japanese fine-tuning experiments for Kyutai Pocket TTS"
 requires-python = ">=3.13"
 dependencies = [
-    "huggingface-hub>=2.1.1",
+    "huggingface-hub>=0.34",
+    "jiwer>=4.0.0",
+    "pocket-tts",
+    "pyarrow>=25.0.1",
+    "pyopenjtalk-plus>=0.4.1.post9",
+    "pyyaml>=6.0.3",
+    "sentencepiece>=0.2.2",
+    "soundfile>=0.14.0",
+    "soxr>=1.1.0",
+    "sphn>=0.2.1",
+    "torchaudio>=2.11.0",
+    "tqdm>=4.70.1",
 ]
+
+[tool.uv.workspace]
+members = [
+    "third-party/pocket-tts",
+]
+
+[tool.uv.sources]
+pocket-tts = { workspace = true, editable = true }
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
