@@ -40,7 +40,7 @@ def pending(run: Path) -> list[int]:
         step = int(re.search(r"(\d+)", p.stem).group(1))  # type: ignore[union-attr]
         if step not in done:
             steps.append(step)
-    return steps
+    return sorted(steps, reverse=True)  # newest first: the latest snapshot matters most
 
 
 def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int, keep: bool):
@@ -60,7 +60,7 @@ def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int
             print(f"{run.name} step {step} {s}: FAILED (see {log})", flush=True)
             return False
     sh(["rsync", "-a", "--include=*/", "--include=metrics.json", "--include=summary.json",
-        "--include=summary.md", "--include=cer.json", "--exclude=*",
+        "--include=summary.md", "--include=cer.json", "--include=generation.jsonl", "--exclude=*",
         f"{host}:{rrun}/eval/", str(run / "eval") + "/"], check=False)
     if not keep:
         sh(["ssh", host, f"rm -f {rrun}/snapshots/step_{step:08d}.safetensors"], check=False)

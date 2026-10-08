@@ -148,6 +148,7 @@ def generate(
         it["tokens"] = tokenize(normalize(it["text"]))
     todo.sort(key=lambda it: len(it["tokens"]))
     counts = {"no_eos": 0, "silent": 0}
+    gen_log = open(out_dir.parent / "generation.jsonl", "a", encoding="utf-8")
     torch.manual_seed(args.seed)
     ratio = round(mimi.encoder_frame_rate / mimi.frame_rate)
     from pocket_tts.modules.stateful_module import init_states
@@ -166,7 +167,10 @@ def generate(
             eos_countdown=args.frames_after_eos + 1,
         )
         for c, lat, budget in zip(chunk, outs, budgets, strict=True):
-            if lat.shape[0] >= budget:
+            no_eos = lat.shape[0] >= budget
+            gen_log.write(json.dumps({"key": c["key"], "tokens": len(c["tokens"]), "frames": int(lat.shape[0]),
+                                      "budget": budget, "no_eos": no_eos}, ensure_ascii=False) + "\n")
+            if no_eos:
                 counts["no_eos"] += 1
                 lat = lat[:budget]
             if lat.shape[0] < MIN_FRAMES:
@@ -176,6 +180,7 @@ def generate(
                 state = init_states(mimi, 1, (lat.shape[0] + MIN_FRAMES) * ratio)
                 wav = mimi.decode_from_latent(lat[None].to(device), state)[0, 0].float().cpu().numpy()
             sf.write(str(out_dir / f"{c['key']}.wav"), np.clip(wav, -1, 1), mimi.sample_rate)
+    gen_log.close()
     return counts
 
 
