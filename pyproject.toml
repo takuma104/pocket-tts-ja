@@ -7,6 +7,8 @@ dependencies = [
     "av>=19.0.1",
     "huggingface-hub>=0.34",
     "jiwer>=4.0.0",
+    "onnx>=1.23.2",
+    "onnx2torch>=1.5.15",
     "onnxruntime>=1.30.0",
     "pocket-tts",
     "pyarrow>=25.0.1",

@@ -22,9 +22,15 @@ DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "data" / "models" / "dnsmo
 
 
 class DNSMOS:
-    def __init__(self, model: Path = DEFAULT_MODEL, threads: int = 4, max_windows: int = 3):
+    def __init__(
+        self, model: Path = DEFAULT_MODEL, threads: int = 4, max_windows: int = 3, batch: int = 2
+    ):
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = threads
+        # The model needs ~0.4 GB of activations per 9 s window; without the arena the memory
+        # goes back after each call instead of staying at the high-water mark.
+        opts.enable_cpu_mem_arena = False
+        self.batch = batch
         self.session = ort.InferenceSession(str(model), opts, providers=["CPUExecutionProvider"])
         self.max_windows = max_windows
 
@@ -42,7 +48,49 @@ class DNSMOS:
             for seg in self._windows(np.asarray(w, dtype=np.float32)):
                 wins.append(seg)
                 owner.append(i)
-        raw = self.session.run(None, {"input_1": np.stack(wins)})[0]
+        raw = np.concatenate(
+            [
+                self.session.run(None, {"input_1": np.stack(wins[i : i + self.batch])})[0]
+                for i in range(0, len(wins), self.batch)
+            ]
+        )
+        mos = np.stack([_P_SIG(raw[:, 0]), _P_BAK(raw[:, 1]), _P_OVR(raw[:, 2])], axis=1)
+        out = np.zeros((len(wavs), 3), dtype=np.float32)
+        cnt = np.zeros(len(wavs))
+        for m, i in zip(mos, owner, strict=True):
+            out[i] += m
+            cnt[i] += 1
+        return out / np.maximum(cnt, 1)[:, None]
+
+
+class TorchDNSMOS(DNSMOS):
+    """The same model converted with onnx2torch and run on a GPU (~2 ms per window on a
+    RTX 5090 versus ~0.9 s per window on one CPU thread)."""
+
+    def __init__(self, device: "torch.device", model: Path = DEFAULT_MODEL, max_windows: int = 3, batch: int = 16):
+        import onnx
+        import torch
+        from onnx2torch import convert
+
+        self.max_windows = max_windows
+        self.batch = batch
+        self.device = device
+        self.net = convert(onnx.load(str(model))).eval().to(device)
+        self._torch = torch
+
+    def __call__(self, wavs: list[npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
+        torch = self._torch
+        wins, owner = [], []
+        for i, w in enumerate(wavs):
+            for seg in self._windows(np.asarray(w, dtype=np.float32)):
+                wins.append(seg)
+                owner.append(i)
+        outs = []
+        with torch.no_grad():
+            for i in range(0, len(wins), self.batch):
+                x = torch.from_numpy(np.stack(wins[i : i + self.batch])).to(self.device)
+                outs.append(self.net(x).float().cpu().numpy())
+        raw = np.concatenate(outs)
         mos = np.stack([_P_SIG(raw[:, 0]), _P_BAK(raw[:, 1]), _P_OVR(raw[:, 2])], axis=1)
         out = np.zeros((len(wavs), 3), dtype=np.float32)
         cnt = np.zeros(len(wavs))

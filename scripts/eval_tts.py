@@ -21,7 +21,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,9 @@ ROTATION = ("jvs006", "jvs041", "jvs007", "jvs066")  # M low/high F0, F low/high
 JVS001 = JVS / "jvs001" / "parallel100" / "wav24kHz16bit" / "VOICEACTRESS100_001.wav"
 FRAME_RATE = 12.5
 MIN_FRAMES = 8
+# non-interactive ssh sessions do not have ~/.local/bin on PATH. The benchmark env is pinned to
+# Python 3.13: under 3.14 its ASR DataLoader cannot pickle its workers.
+UV = os.environ.get("UV") or shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
 
 
 def snapshot_path(run_dir: Path, which: str) -> tuple[Path, int]:
@@ -176,7 +181,7 @@ def generate(
 
 def run_jkyb_eval(audio_dir: Path, dataset: Path, out_dir: Path) -> dict[str, Any]:
     cmd = [
-        "uv", "run", "--project", str(JKYB_PROJECT), "--extra", "asr",
+        UV, "run", "--python", "3.13", "--project", str(JKYB_PROJECT), "--extra", "asr",
         "jkyb-eval", "tts", str(audio_dir), "--dataset", str(dataset),
         "--device", "cuda", "--output-dir", str(out_dir),
     ]
@@ -186,14 +191,14 @@ def run_jkyb_eval(audio_dir: Path, dataset: Path, out_dir: Path) -> dict[str, An
 
 def run_jvs_scoring(items: list[dict[str, Any]], audio_dir: Path, out_dir: Path) -> dict[str, Any]:
     subprocess.run(
-        ["uv", "run", "--project", str(JKYB_PROJECT), "--extra", "asr", "python",
+        [UV, "run", "--python", "3.13", "--project", str(JKYB_PROJECT), "--extra", "asr", "python",
          str(REPO / "scripts" / "asr_transcribe.py"), str(audio_dir)],
         check=True, cwd=REPO,
     )
     asr_dir = audio_dir.parent / f"asr_{audio_dir.name}"
     (out_dir / "items.json").write_text(json.dumps(items, ensure_ascii=False))
     subprocess.run(
-        ["uv", "run", "--project", str(JKYB_PROJECT), "--extra", "asr", "python",
+        [UV, "run", "--python", "3.13", "--project", str(JKYB_PROJECT), "--extra", "asr", "python",
          str(REPO / "scripts" / "score_jvs_cer.py"), str(out_dir / "items.json"), str(asr_dir),
          str(out_dir / "cer.json")],
         check=True, cwd=REPO,

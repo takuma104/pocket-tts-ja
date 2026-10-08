@@ -6,12 +6,13 @@ Per video (CPU worker pool):
      cutting at pauses >= 0.5 s (shorter gaps are merged while the utterance stays <= 20 s)
   3. attach the caption text: YouTube ASR captions carry per-word start times, a word goes
      to the utterance its start falls in; uploader subtitles are attached by >= 50% overlap
-  4. DNSMOS P.835 (SIG/BAK/OVRL) and the speech end (last 80 ms frame within 35 dB of peak)
+  4. the speech end (last 80 ms frame within 35 dB of peak)
 Per batch (GPU, main process):
   5. whisper-large-v3-turbo transcription (the label candidate, and the second opinion for
      the caption-agreement filter applied later by finalize_yodas3.py)
   6. ECAPA speaker embedding (per-video speaker clustering happens in finalize)
   7. Mimi latents (fp32/TF32, right-padded batches are exact since the encoder is causal)
+  8. DNSMOS P.835 (SIG/BAK/OVRL), converted to torch (pocket_tts_ja.dnsmos.TorchDNSMOS)
 
 Utterances without caption words are dropped before the GPU stages. Outputs (resumable,
 one set per shard) go to --out:
@@ -40,33 +41,34 @@ import soxr
 import torch
 
 SR24, SR16 = 24000, 16000
-MAX_VIDEO_SEC = 3600.0  # longer videos (streams, music) yield little speech and dominate memory
+MAX_VIDEO_SEC = 4 * 3600.0  # multi-hour streams (mostly music/chat) are skipped
+WINDOW_SEC = 600.0  # videos are decoded and segmented in 10-minute windows
 FRAME = 1920
 MIN_UTT, MAX_UTT, CUT_GAP = 3.0, 20.0, 0.5
 PAD = 0.1
 
 _vad: Any = None
-_dnsmos: Any = None
 
 
 def _init_worker():
-    global _vad, _dnsmos
+    global _vad
     torch.set_num_threads(1)
     import silero_vad
 
-    from pocket_tts_ja.dnsmos import DNSMOS
-
     _vad = silero_vad.load_silero_vad()
-    _dnsmos = DNSMOS(threads=1)
 
 
-def decode_webm(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
+def decode_windows(data: bytes, win_sec: float = WINDOW_SEC) -> Iterator[tuple[float, npt.NDArray[np.float32], int]]:
+    """Decode a webm/opus member to mono float32 in consecutive windows of win_sec seconds:
+    (window start in seconds, samples, sample rate). Bounds a worker's memory to one window
+    whatever the video length."""
     import av
 
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.audio[0]
         sr = stream.rate
-        chunks = []
+        chunks: list[npt.NDArray[np.float32]] = []
+        n, start = 0, 0.0
         for frame in container.decode(stream):
             a = frame.to_ndarray()
             if a.ndim == 2 and a.shape[0] > 1 and frame.format.is_planar:
@@ -76,7 +78,13 @@ def decode_webm(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
             else:
                 a = a.reshape(-1)
             chunks.append(a.astype(np.float32))
-    return (np.concatenate(chunks) if chunks else np.zeros(0, np.float32)), sr
+            n += len(chunks[-1])
+            if n >= win_sec * sr:
+                yield start, np.concatenate(chunks), sr
+                start += n / sr
+                chunks, n = [], 0
+        if chunks:
+            yield start, np.concatenate(chunks), sr
 
 
 def speech_end_frames(wav: npt.NDArray[np.float32]) -> int:
@@ -151,47 +159,46 @@ def caption_text(kind: str, caps: list[tuple[float, float, str]], s: float, e: f
 
 
 def process_video(job: tuple[str, bytes, dict[str, Any]]) -> list[dict[str, Any]]:
-    vid, data, meta = job
-    try:
-        wav, sr = decode_webm(data)
-    except Exception:  # noqa: BLE001 - corrupt member
-        return []
-    if len(wav) < sr * MIN_UTT or len(wav) > sr * MAX_VIDEO_SEC:
-        return []
-    w24 = soxr.resample(wav, sr, SR24).astype(np.float32)
-    w16 = soxr.resample(wav, sr, SR16).astype(np.float32)
     import silero_vad
 
-    ts = silero_vad.get_speech_timestamps(
-        torch.from_numpy(w16), _vad, sampling_rate=SR16, min_silence_duration_ms=300,
-        min_speech_duration_ms=250, speech_pad_ms=30,
-    )
-    regions = [(t["start"] / SR16, t["end"] / SR16) for t in ts]
+    vid, data, meta = job
     kind, caps = captions(meta.get("transcript"))
-    out = []
-    total = len(w24) / SR24
-    for k, (s, e) in enumerate(merge_regions(regions)):
-        s, e = max(0.0, s - PAD), min(total, e + PAD)
-        text = caption_text(kind, caps, s, e)
-        if not text.strip():
-            continue
-        a24 = w24[int(s * SR24) : int(e * SR24)]
-        a16 = w16[int(s * SR16) : int(e * SR16)]
-        peak = float(np.abs(a24).max()) if len(a24) else 0.0
-        if peak < 1e-3:
-            continue
-        out.append(
-            {
-                "id": f"{vid}_{k:04d}", "video": vid, "start": round(s, 3), "end": round(e, 3),
-                "duration": round(e - s, 3), "caption": text, "caption_kind": kind,
-                "speech_end": speech_end_frames(a24), "a24": a24.astype(np.float16), "a16": a16,
-            }
-        )
-    if out:
-        mos = _dnsmos([u["a16"] for u in out])
-        for u, m in zip(out, mos, strict=True):
-            u["dnsmos_sig"], u["dnsmos_bak"], u["dnsmos_ovrl"] = (round(float(x), 3) for x in m)
-            del u["a16"]  # re-derived from a24 in the main process: halves the result size
+    out: list[dict[str, Any]] = []
+    k = 0
+    try:
+        for w_start, wav, sr in decode_windows(data):
+            if len(wav) < sr * MIN_UTT:
+                continue
+            w24 = soxr.resample(wav, sr, SR24).astype(np.float32)
+            w16 = soxr.resample(wav, sr, SR16).astype(np.float32)
+            del wav
+            ts = silero_vad.get_speech_timestamps(
+                torch.from_numpy(w16), _vad, sampling_rate=SR16, min_silence_duration_ms=300,
+                min_speech_duration_ms=250, speech_pad_ms=30,
+            )
+            regions = [(t["start"] / SR16, t["end"] / SR16) for t in ts]
+            total = len(w24) / SR24
+            window: list[dict[str, Any]] = []
+            for s, e in merge_regions(regions):
+                s, e = max(0.0, s - PAD), min(total, e + PAD)
+                text = caption_text(kind, caps, w_start + s, w_start + e)
+                if not text.strip():
+                    continue
+                a24 = w24[int(s * SR24) : int(e * SR24)]
+                if not len(a24) or float(np.abs(a24).max()) < 1e-3:
+                    continue
+                window.append(
+                    {
+                        "id": f"{vid}_{k:04d}", "video": vid, "start": round(w_start + s, 3),
+                        "end": round(w_start + e, 3), "duration": round(e - s, 3), "caption": text,
+                        "caption_kind": kind, "speech_end": speech_end_frames(a24),
+                        "a24": a24.astype(np.float16),
+                    }
+                )
+                k += 1
+            out += window
+    except Exception:  # noqa: BLE001 - corrupt or truncated member: keep what was decoded
+        pass
     return out
 
 
@@ -221,6 +228,9 @@ class GPUStages:
             "speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": str(device)},
             savedir="data/models/spkrec-ecapa-voxceleb",
         )
+        from pocket_tts_ja.dnsmos import TorchDNSMOS
+
+        self.dnsmos = TorchDNSMOS(device)
         self.proc = WhisperProcessor.from_pretrained(asr_model)
         self.asr = WhisperForConditionalGeneration.from_pretrained(
             asr_model, dtype=torch.float16, attn_implementation="sdpa"
@@ -256,10 +266,12 @@ class GPUStages:
                 x16.to(self.device), wav_lens=torch.tensor([n / T16 for n in lens16], device=self.device)
             )[:, 0]
             embs += list(torch.nn.functional.normalize(emb, dim=-1).half().cpu().numpy())
+        mos = self.dnsmos([u["a16"] for u in utts])
         for i, u in enumerate(utts):
             u["whisper"] = texts[i].strip()
             u["latents"] = lats[i]
             u["ecapa"] = embs[i]
+            u["dnsmos_sig"], u["dnsmos_bak"], u["dnsmos_ovrl"] = (round(float(x), 3) for x in mos[i])
 
 
 def _sub_batches(utts: list[dict[str, Any]], max_padded_sec: float) -> Iterator[list[dict[str, Any]]]:
@@ -294,7 +306,13 @@ def main():
         return
     table = pq.read_table(args.root / "metadata" / f"{args.shard}.parquet",
                           columns=["id", "transcript", "length"]).to_pydict()
-    meta = {table["id"][i]: {"transcript": table["transcript"][i]} for i in range(len(table["id"]))}
+    # Long videos are skipped before decoding: a multi-hour stream decodes to >10 GB per worker.
+    meta = {
+        table["id"][i]: {"transcript": table["transcript"][i]}
+        for i in range(len(table["id"]))
+        if (table["length"][i] or 0) <= MAX_VIDEO_SEC
+    }
+    print(f"{args.shard}: {len(meta)}/{len(table['id'])} videos <= {MAX_VIDEO_SEC:.0f}s", flush=True)
     gpu = GPUStages(torch.device("cuda"), args.asr_model)
 
     rows: list[dict[str, Any]] = []
@@ -348,7 +366,7 @@ def main():
     # decoded video in memory if the GPU falls behind.
     from collections import deque
 
-    with ctx.Pool(args.workers, initializer=_init_worker) as pool:
+    with ctx.Pool(args.workers, initializer=_init_worker, maxtasksperchild=50) as pool:
         inflight: deque[Any] = deque()
         for job in jobs:
             inflight.append(pool.apply_async(process_video, (job,)))

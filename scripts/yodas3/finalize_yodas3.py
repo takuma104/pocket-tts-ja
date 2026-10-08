@@ -13,6 +13,10 @@ non-empty label, not a JKYB-Parakeet sentence.
 Speakers: per video, average-linkage clustering of the kept utterances' ECAPA embeddings
 (cosine distance cut at --cluster-dist); clusters with >= 2 utterances become speaker labels
 `<video>#<k>`, the rest is dropped (a voice prompt needs another utterance of the speaker).
+Mass-produced voices: speaker clusters whose ECAPA centroid has cos >= --tts-cos with clusters
+of at least --tts-min-videos other videos are dropped. Text-to-speech channels (e.g. Wikipedia
+read aloud by a TTS engine) reuse one synthetic voice across hundreds of videos with
+near-identical embeddings, whereas one real person varies across recordings.
 Split: valid = md5(video) % 200 == 0. Writes <root>/{train,valid}.jsonl for the loader.
 
     uv run python scripts/yodas3/finalize_yodas3.py --root data/yodas3
@@ -58,6 +62,8 @@ def main():
     parser.add_argument("--max-cer", type=float, default=0.10)
     parser.add_argument("--min-dnsmos", type=float, default=3.0)
     parser.add_argument("--cluster-dist", type=float, default=0.55)
+    parser.add_argument("--tts-cos", type=float, default=0.92)
+    parser.add_argument("--tts-min-videos", type=int, default=20)
     parser.add_argument("--workers", type=int, default=12)
     args = parser.parse_args()
 
@@ -102,16 +108,45 @@ def main():
             emb_cache[r["shard"]] = np.load(args.root / "ecapa" / f"{r['shard']}.npy").astype(np.float32)
         return emb_cache[r["shard"]][r["ecapa_row"]]
 
-    out: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
-    spk_sizes = []
+    def emb_of_mean(rs: list[dict[str, Any]]) -> np.ndarray:
+        v = np.mean([emb_of(r) for r in rs], axis=0)
+        return v / (np.linalg.norm(v) + 1e-8)
+
+    # per-video speaker clusters
+    clusters: list[tuple[str, int, list[int]]] = []  # (video, k, row indices)
     for video, idx in kept_by_video.items():
         labels = cluster_video(np.stack([emb_of(rows[i]) for i in idx]), args.cluster_dist)
-        sizes = Counter(labels.tolist())
-        split = "valid" if int(hashlib.md5(video.encode()).hexdigest(), 16) % 200 == 0 else "train"
+        members: dict[int, list[int]] = defaultdict(list)
         for i, k in zip(idx, labels.tolist(), strict=True):
-            if sizes[k] < 2:
-                stats["drop_singleton_speaker"] += 1
+            members[k].append(i)
+        for k, m in members.items():
+            if len(m) < 2:
+                stats["drop_singleton_speaker"] += len(m)
                 continue
+            clusters.append((video, k, m))
+
+    # mass-produced (TTS) voices: near-identical centroids across many videos
+    flagged: set[int] = set()
+    if clusters:
+        cent = np.stack([emb_of_mean([rows[i] for i in m]) for _, _, m in clusters])
+        vids = np.array([hash(v) for v, _, _ in clusters])
+        for a in range(0, len(cent), 4096):
+            sim = cent[a : a + 4096] @ cent.T
+            for r in range(sim.shape[0]):
+                close = np.nonzero(sim[r] >= args.tts_cos)[0]
+                if len(np.unique(vids[close])) - 1 >= args.tts_min_videos:
+                    flagged.add(a + r)
+    stats["drop_mass_voice_utts"] = sum(len(clusters[c][2]) for c in flagged)
+    stats["mass_voice_clusters"] = len(flagged)
+
+    out: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
+    spk_sizes = []
+    for c, (video, k, m) in enumerate(clusters):
+        if c in flagged:
+            continue
+        split = "valid" if int(hashlib.md5(video.encode()).hexdigest(), 16) % 200 == 0 else "train"
+        spk_sizes.append(len(m))
+        for i in m:
             r = rows[i]
             out[split].append(
                 {
@@ -122,7 +157,6 @@ def main():
                     "lat_start": r["lat_start"], "lat_len": r["lat_len"], "speech_end": r["speech_end"],
                 }
             )
-        spk_sizes += [n for n in sizes.values() if n >= 2]
 
     summary: dict[str, Any] = {
         "utts_in": len(rows),
