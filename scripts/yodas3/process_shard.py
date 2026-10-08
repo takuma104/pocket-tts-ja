@@ -40,6 +40,7 @@ import soxr
 import torch
 
 SR24, SR16 = 24000, 16000
+MAX_VIDEO_SEC = 3600.0  # longer videos (streams, music) yield little speech and dominate memory
 FRAME = 1920
 MIN_UTT, MAX_UTT, CUT_GAP = 3.0, 20.0, 0.5
 PAD = 0.1
@@ -155,7 +156,7 @@ def process_video(job: tuple[str, bytes, dict[str, Any]]) -> list[dict[str, Any]
         wav, sr = decode_webm(data)
     except Exception:  # noqa: BLE001 - corrupt member
         return []
-    if len(wav) < sr * MIN_UTT:
+    if len(wav) < sr * MIN_UTT or len(wav) > sr * MAX_VIDEO_SEC:
         return []
     w24 = soxr.resample(wav, sr, SR24).astype(np.float32)
     w16 = soxr.resample(wav, sr, SR16).astype(np.float32)
@@ -183,13 +184,14 @@ def process_video(job: tuple[str, bytes, dict[str, Any]]) -> list[dict[str, Any]
             {
                 "id": f"{vid}_{k:04d}", "video": vid, "start": round(s, 3), "end": round(e, 3),
                 "duration": round(e - s, 3), "caption": text, "caption_kind": kind,
-                "speech_end": speech_end_frames(a24), "a24": a24, "a16": a16,
+                "speech_end": speech_end_frames(a24), "a24": a24.astype(np.float16), "a16": a16,
             }
         )
     if out:
         mos = _dnsmos([u["a16"] for u in out])
         for u, m in zip(out, mos, strict=True):
             u["dnsmos_sig"], u["dnsmos_bak"], u["dnsmos_ovrl"] = (round(float(x), 3) for x in m)
+            del u["a16"]  # re-derived from a24 in the main process: halves the result size
     return out
 
 
@@ -226,6 +228,9 @@ class GPUStages:
 
     @torch.no_grad()
     def __call__(self, utts: list[dict[str, Any]]):
+        for u in utts:
+            u["a24"] = u["a24"].astype(np.float32)
+            u["a16"] = soxr.resample(u["a24"], SR24, SR16).astype(np.float32)
         feats = self.proc.feature_extractor(
             [u["a16"] for u in utts], sampling_rate=SR16, return_tensors="pt", device=str(self.device)
         ).input_features.to(self.device, torch.float16)
@@ -275,7 +280,7 @@ def main():
     parser.add_argument("--shard", required=True)
     parser.add_argument("--root", type=Path, default=Path("/mnt/artifacts/yodas3/data/ja"))
     parser.add_argument("--out", type=Path, default=Path("data/yodas3"))
-    parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--batch", type=int, default=48)
     parser.add_argument("--asr-model", default="openai/whisper-large-v3-turbo")
     parser.add_argument("--limit-videos", type=int, default=0)
@@ -315,7 +320,7 @@ def main():
                 lat = u.pop("latents")
                 emb_rows.append(u.pop("ecapa"))
                 u.pop("a24")
-                u.pop("a16")
+                u.pop("a16", None)
                 u["lat_start"], u["lat_len"] = n_frames, int(lat.shape[0])
                 n_frames += int(lat.shape[0])
                 lat_chunks.append(lat)
@@ -347,7 +352,7 @@ def main():
         inflight: deque[Any] = deque()
         for job in jobs:
             inflight.append(pool.apply_async(process_video, (job,)))
-            while len(inflight) >= 2 * args.workers:
+            while len(inflight) >= args.workers + args.workers // 2:
                 handle(inflight.popleft().get())
         while inflight:
             handle(inflight.popleft().get())
