@@ -25,6 +25,23 @@ ChatGPT案をそのまま骨格にする。
 - 推論は現行 wheel への厳密な互換を条件とする。
 - ReazonSpeech は使わない。Irodori の合成音声は積極的に使う。
 
+## 0. 進捗（2026-10-09 08:30 時点）
+
+| 項目 | 状態 |
+|---|---|
+| A0〜A3 | 完了。Emilia の train 1,709h / 775k 発話。学習は 2.5 steps/s、VRAM のピーク 25GiB |
+| A5 | 完了。**4k を採用**: JKYB-mini 65.3% 対 8k 63.4%、McNemar p=0.031（[A5_pilot.md](../reports/A5_pilot.md)） |
+| B1_4k | 実行中。A5_4k の 15k から Emilia のみで再開した。S3 の合成データが揃ったらミックスに切り替えて続ける |
+| S3 合成（galleria2） | 実行中。300k 文、ETA は 20:00 前後 |
+| Y YODAS3 | ダウンロード完了（108 シャード）。前処理を galleria2 で実行中（ETA 2〜3日）。2 シャードの実績は 165h から 21.6h（13%）で、全量なら約1,170h の見込み |
+
+**CC-BY 系ライン（B-CC、追加）**
+
+- データ: YODAS3（フィルタ後、約1.1kh）+ Emilia-YODAS（CC BY 4.0。Emilia の B4–6 にある YODAS と同一の発話を含む）+ Irodori 合成。
+- Tokenizer: CC-BY のデータだけで学習し直し、英語 24L の初期値から始める。
+- YODAS3 の前処理が終わったら始める。
+- 本線（NC、Emilia 込み）と JKYB・JVS で比べ、公開版を決める。
+
 ---
 
 ## 1. 事前検証の結果（このセッションで実施）
