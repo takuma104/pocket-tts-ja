@@ -218,7 +218,7 @@ def iter_members(tar_path: Path, meta: dict[str, dict[str, Any]]) -> Iterator[tu
 class GPUStages:
     def __init__(
         self, device: torch.device, asr_model: str, blocklist: Path | None = None,
-        block_cos: float = 0.9, min_dnsmos: float = 2.9,
+        block_cos: float = 0.9, min_dnsmos: float = 2.9, max_padded_sec: float = 120.0,
     ):
         from speechbrain.inference.speaker import EncoderClassifier
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
@@ -238,6 +238,7 @@ class GPUStages:
         self.blocklist = np.load(blocklist).astype(np.float32) if blocklist and blocklist.exists() else None
         self.block_cos = block_cos
         self.min_dnsmos = min_dnsmos
+        self.max_padded_sec = max_padded_sec
         self.proc = WhisperProcessor.from_pretrained(asr_model)
         self.asr = WhisperForConditionalGeneration.from_pretrained(
             asr_model, dtype=torch.float16, attn_implementation="sdpa"
@@ -250,7 +251,7 @@ class GPUStages:
             u["a16"] = soxr.resample(u["a24"], SR24, SR16).astype(np.float32)
         lats: list[npt.NDArray[np.float16]] = []
         embs: list[npt.NDArray[np.float16]] = []
-        for sub in _sub_batches(utts, max_padded_sec=120.0):
+        for sub in _sub_batches(utts, max_padded_sec=self.max_padded_sec):
             lens24 = [len(u["a24"]) for u in sub]
             T = max(lens24)
             T += (-T) % FRAME
@@ -314,6 +315,8 @@ def main():
     parser.add_argument("--batch", type=int, default=48)
     parser.add_argument("--asr-model", default="openai/whisper-large-v3-turbo")
     parser.add_argument("--limit-videos", type=int, default=0)
+    parser.add_argument("--max-padded-sec", type=float, default=120.0,
+                        help="Mimi/ECAPA sub-batch size in padded seconds (lower = less GPU memory)")
     parser.add_argument("--tts-blocklist", type=Path, default=None,
                         help="mass-voice centroids from finalize_yodas3.py (skip Whisper near them)")
     args = parser.parse_args()
@@ -333,7 +336,8 @@ def main():
         if (table["length"][i] or 0) <= MAX_VIDEO_SEC
     }
     print(f"{args.shard}: {len(meta)}/{len(table['id'])} videos <= {MAX_VIDEO_SEC:.0f}s", flush=True)
-    gpu = GPUStages(torch.device("cuda"), args.asr_model, blocklist=args.tts_blocklist)
+    gpu = GPUStages(torch.device("cuda"), args.asr_model, blocklist=args.tts_blocklist,
+                    max_padded_sec=args.max_padded_sec)
 
     rows: list[dict[str, Any]] = []
     lat_chunks: list[npt.NDArray[np.float16]] = []

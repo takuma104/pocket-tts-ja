@@ -22,6 +22,14 @@ REMOTE_REPO = "~/co/pocket-tts-ja"
 JVS = Path("data/jvs_ver1")
 
 
+def local_path(p: str) -> Path:
+    """Paths recorded on the eval host point into its checkout; map them into this one."""
+    path = Path(p)
+    if path.exists() or "pocket-tts-ja/" not in p:
+        return path
+    return Path(__file__).resolve().parents[1] / p.split("pocket-tts-ja/", 1)[1]
+
+
 def fetch(remote: str | None, run: Path, rel: str, dst: Path):
     dst.parent.mkdir(parents=True, exist_ok=True)
     local = run / rel
@@ -68,12 +76,12 @@ def main():
         for spk, its in sorted(by_spk.items()):
             gender = its[0].get("gender", "?")
             prompt_dst = audio / f"{spk}_prompt.wav"
-            shutil.copyfile(its[0]["prompt"], prompt_dst)
+            shutil.copyfile(local_path(its[0]["prompt"]), prompt_dst)
             rows.append(f'<tr class="spk"><th colspan="{2 + len(args.runs)}">{spk} ({gender}) — prompt '
                         f'<audio controls preload="none" src="audio/{prompt_dst.name}"></audio></th></tr>')
             for it in its[: args.jvs_sentences]:
                 real = audio / f"{it['key']}_real.wav"
-                shutil.copyfile(it["reference"], real)
+                shutil.copyfile(local_path(it["reference"]), real)
                 cells = [f"<td class='text'>{html.escape(it['text'])}</td>",
                          f'<td><audio controls preload="none" src="audio/{real.name}"></audio></td>']
                 for run in args.runs:
