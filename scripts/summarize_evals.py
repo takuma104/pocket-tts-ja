@@ -16,8 +16,8 @@ COLUMNS = {
                ("text_cer@1", "textCER"), ("no_eos_count", "noEOS")],
     "jsut": [("kana_cer@1", "kanaCER"), ("text_cer@1", "textCER"), ("no_eos_count", "noEOS")],
     "jvs": [("kana_cer@1", "kanaCER"), ("kana_cer@1_M", "M"), ("kana_cer@1_F", "F"),
-            ("text_cer@1", "textCER"), ("sim_ecapa", "SIM"), ("no_eos_count", "noEOS"),
-            ("silent_count", "silent")],
+            ("text_cer@1", "textCER"), ("sim_ecapa", "SIM"), ("lufs_gap", "LUgap"),
+            ("lufs_gap_quiet", "LUgapQ"), ("no_eos_count", "noEOS"), ("silent_count", "silent")],
 }
 
 
@@ -28,6 +28,8 @@ def fmt(key: str, v: float | None) -> str:
         return f"{int(v)}"
     if key == "sim_ecapa":
         return f"{v:.3f}"
+    if key.startswith("lufs"):
+        return f"{v:+.1f}"
     return f"{100 * v:.2f}"
 
 

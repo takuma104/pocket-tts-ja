@@ -34,6 +34,7 @@ import safetensors.torch
 import soundfile as sf
 import torch
 
+from pocket_tts.data.audio_utils import end_on_pause
 from pocket_tts_ja.jvs import list_items, read_genders
 from pocket_tts_ja.text import normalize
 from training.args import load_args
@@ -167,7 +168,17 @@ def generate(
         if path not in voice_cache:
             wav, sr = sf.read(path, dtype="float32")
             assert sr == mimi.sample_rate
-            voice_cache[path] = mimi.encode_to_latent(torch.from_numpy(wav)[None, None].to(device))[0]
+            x = torch.from_numpy(wav)[None, None]
+            target = getattr(args, "prompt_lufs", None)
+            if target is not None:  # experiments only: bring the prompt to a fixed loudness
+                import pyloudnorm
+
+                gain = target - pyloudnorm.Meter(sr).integrated_loudness(wav.astype(np.float64))
+                x = x * float(10 ** (gain / 20))
+            if getattr(args, "end_on_pause", False):
+                # what the stock get_state_for_audio_prompt does: trailing silence -> an 80 ms pause
+                x = end_on_pause(x, mimi.sample_rate)
+            voice_cache[path] = mimi.encode_to_latent(x.to(device))[0]
         return voice_cache[path]
 
     todo = [it for it in items if not (out_dir / f"{it['key']}.wav").exists()]
@@ -238,7 +249,38 @@ def run_jvs_scoring(items: list[dict[str, Any]], audio_dir: Path, out_dir: Path)
     cer = json.loads((out_dir / "cer.json").read_text())
     if all("reference" in it for it in items):
         cer["sim_ecapa"] = speaker_similarity(items, audio_dir)
+        cer.update(loudness_gap(items, audio_dir))
     return cer
+
+
+def loudness_gap(items: list[dict[str, Any]], audio_dir: Path) -> dict[str, float]:
+    """Generated minus voice-prompt loudness (BS.1770 LUFS), median over items.
+
+    The model should copy the prompt's level; quiet prompts (JVS is -24..-31 LUFS, the
+    training data mostly -24..-14) came out several LU quieter still. `_quiet`: prompts
+    below -27 LUFS.
+    """
+    import pyloudnorm
+
+    meter = pyloudnorm.Meter(24000)
+
+    def lufs(path: Path | str) -> float:
+        wav, sr = sf.read(str(path), dtype="float64")
+        assert sr == 24000
+        return float(meter.integrated_loudness(wav))
+
+    prompt_lufs = {p: lufs(p) for p in {it["prompt"] for it in items}}
+    gaps, quiet = [], []
+    for it in items:
+        g = lufs(audio_dir / f"{it['key']}.wav") - prompt_lufs[it["prompt"]]
+        if np.isfinite(g):
+            gaps.append(g)
+            if prompt_lufs[it["prompt"]] < -27:
+                quiet.append(g)
+    out = {"lufs_gap": float(np.median(gaps)), "lufs_gap_abs": float(np.median(np.abs(gaps)))}
+    if quiet:
+        out["lufs_gap_quiet"] = float(np.median(quiet))
+    return out
 
 
 def speaker_similarity(items: list[dict[str, Any]], audio_dir: Path) -> float:
@@ -272,6 +314,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--jvs-speakers", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--end-on-pause", action="store_true",
+                        help="prepare prompts like the stock inference (end_on_pause)")
     parser.add_argument("--limit", type=int, default=0, help="first N items only (smoke tests)")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
@@ -280,6 +324,8 @@ def main():
     tag = f"{args.set}_{args.voice}_cfg{args.cfg}" + (f"_n{args.jvs_speakers}" if args.set == "jvs" else "")
     if args.temp != 0.3:
         tag += f"_t{args.temp}"
+    if args.end_on_pause:
+        tag += "_eop"
     if args.limit:
         tag += f"_limit{args.limit}"
     out_dir = args.run_dir / "eval" / f"step{step:08d}" / tag

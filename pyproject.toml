@@ -12,6 +12,7 @@ dependencies = [
     "onnxruntime>=1.30.0",
     "pocket-tts",
     "pyarrow>=25.0.1",
+    "pyloudnorm>=0.2.0",
     "pyopenjtalk-plus>=0.4.1.post9",
     "pyyaml>=6.0.3",
     "sentencepiece>=0.2.2",

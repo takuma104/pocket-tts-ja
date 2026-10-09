@@ -35,6 +35,8 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=25)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--end-on-pause", action="store_true", help="stock-inference prompt preparation")
+    parser.add_argument("--prompt-lufs", type=float, default=None, help="normalize prompts to this loudness")
     args = parser.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -49,7 +51,8 @@ def main() -> None:
         out_dir = args.out / f"t{temp}_cfg{cfg}" / "audio"
         out_dir.mkdir(parents=True, exist_ok=True)
         gen_args = argparse.Namespace(seed=0, batch_size=args.batch_size, temp=temp, cfg=cfg,
-                                      eos_threshold=-4.0, frames_after_eos=5)
+                                      eos_threshold=-4.0, frames_after_eos=5, end_on_pause=args.end_on_pause,
+                                      prompt_lufs=args.prompt_lufs)
         generate(model, mimi, items, out_dir, gen_args)
         profs = {it["key"]: onset_profile(load(out_dir / f"{it['key']}.wav")) for it in items}
         keys = [k for k, p in profs.items() if p is not None and real.get(k) is not None]

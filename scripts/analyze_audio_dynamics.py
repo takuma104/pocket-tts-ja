@@ -6,6 +6,9 @@ tail: energy in the frames emitted after EOS fired. eval_tts.py (like the offici
 dyn:  within-utterance loudness movement: 1 s RMS windows (hop 0.25 s) over the speech span,
       reported as the p90-p10 range in dB, paired with the speaker's real JVS recording of the
       same sentence when an eval items.json is given.
+loudness: per speaker, ITU-R BS.1770 integrated loudness (LUFS, K-weighted) of the voice prompt,
+      the real takes, their Mimi reconstructions and the generated clips, next to the plain RMS
+      level, to see whether level gaps are real or come from lost highs (K-weighting favours them).
 onset: level of each 0.4 s bin from the speech onset relative to the rest of the utterance
       (voiced frames only), for generated clips, the real JVS takes and e.g. their Mimi
       reconstructions, all paired by eval item key.
@@ -153,6 +156,69 @@ def cmd_onset(args: argparse.Namespace) -> None:
         print(f"| {label} | {len(keys)} | " + " | ".join(f"{m:+.1f}" for m in med) + f" | {paired} |")
 
 
+def lufs(wav: npt.NDArray[np.float32]) -> float:
+    import pyloudnorm
+
+    return float(pyloudnorm.Meter(SR).integrated_loudness(wav.astype(np.float64)))
+
+
+def rms_level(wav: npt.NDArray[np.float32]) -> float:
+    db = frame_db(wav, FRAME, FRAME)
+    v = db >= db.max() - 40
+    return float(10 * np.log10((10 ** (db[v] / 10)).mean()))
+
+
+def cmd_loudness(args: argparse.Namespace) -> None:
+    items = json.loads(Path(args.items).read_text())
+    recon = Path(args.recon) if args.recon else None
+    sets = [(spec.split("=", 1)[0], Path(spec.split("=", 1)[1])) for spec in args.sets]
+    by_spk: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    gender: dict[str, str] = {}
+    prompt_level: dict[str, tuple[float, float]] = {}
+    for it in items:
+        spk = it["key"].split("_")[0]
+        gender[spk] = it.get("gender", "?")
+        d = by_spk.setdefault(spk, {})
+        if spk not in prompt_level:
+            pw = load(local_path(it["prompt"]))
+            prompt_level[spk] = (lufs(pw), rms_level(pw))
+            if recon is not None:
+                pr = recon / f"{spk}_{Path(it['prompt']).parent.parent.name}_{Path(it['prompt']).stem}.wav"
+                if pr.exists():
+                    w = load(pr)
+                    d.setdefault("prompt_recon", []).append((lufs(w), rms_level(w)))
+        real = load(local_path(it["reference"]))
+        d.setdefault("real", []).append((lufs(real), rms_level(real)))
+        if recon is not None and (recon / f"{it['key']}.wav").exists():
+            w = load(recon / f"{it['key']}.wav")
+            d.setdefault("recon", []).append((lufs(w), rms_level(w)))
+        for label, root in sets:
+            path = root / "audio" / f"{it['key']}.wav"
+            if not path.exists():
+                path = root / f"{it['key']}.wav"
+            if path.exists():
+                w = load(path)
+                d.setdefault(label, []).append((lufs(w), rms_level(w)))
+
+    def med(spk: str, key: str, i: int) -> float:
+        v = by_spk[spk].get(key, [])
+        return float(np.median([x[i] for x in v])) if v else float("nan")
+
+    labels = [label for label, _ in sets]
+    print("LUFS (BS.1770 integrated); differences in LU, with the RMS-level difference in dB in brackets\n")
+    print("| speaker | prompt LUFS | real LUFS | prompt − real | recon − real (Mimi) | "
+          + " | ".join(f"{l} − real" for l in labels) + " | " + " | ".join(f"{l} − prompt" for l in labels) + " |")
+    print("|---|---:|---:|---:|---:|" + "---:|" * (2 * len(labels)))
+    for spk in sorted(by_spk, key=lambda s: (gender[s], s)):
+        pl, pr = prompt_level[spk]
+        rl, rr = med(spk, "real", 0), med(spk, "real", 1)
+        cells = [f"{spk} ({gender[spk]})", f"{pl:.1f}", f"{rl:.1f}", f"{pl - rl:+.1f} [{pr - rr:+.1f}]",
+                 f"{med(spk, 'recon', 0) - rl:+.1f} [{med(spk, 'recon', 1) - rr:+.1f}]"]
+        cells += [f"{med(spk, l, 0) - rl:+.1f} [{med(spk, l, 1) - rr:+.1f}]" for l in labels]
+        cells += [f"{med(spk, l, 0) - pl:+.1f} [{med(spk, l, 1) - pr:+.1f}]" for l in labels]
+        print("| " + " | ".join(cells) + " |")
+
+
 def cmd_tail(args: argparse.Namespace) -> None:
     print(f"post-EOS frames = last {args.frames_after_eos}; dB relative to the clip's pre-EOS peak frame\n")
     print("| set | clips | post max (median) | post max > -25 dB | post max > -15 dB | last pre-EOS frame (median) |")
@@ -220,8 +286,12 @@ def main() -> None:
     o.add_argument("--items", default=None, help="JVS eval items.json (keys and real recordings); without it, unpaired")
     o.add_argument("--limit", type=int, default=1000)
     o.add_argument("--match", default=None, help="only items whose key contains this")
+    lo = sub.add_parser("loudness")
+    lo.add_argument("sets", nargs="*", help="LABEL=dir with audio/<key>.wav or <key>.wav")
+    lo.add_argument("--items", required=True)
+    lo.add_argument("--recon", default=None, help="dir of Mimi reconstructions named like the JVS keys")
     args = parser.parse_args()
-    {"tail": cmd_tail, "dyn": cmd_dyn, "onset": cmd_onset}[args.cmd](args)
+    {"tail": cmd_tail, "dyn": cmd_dyn, "onset": cmd_onset, "loudness": cmd_loudness}[args.cmd](args)
 
 
 if __name__ == "__main__":
