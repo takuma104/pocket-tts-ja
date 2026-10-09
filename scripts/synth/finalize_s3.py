@@ -135,7 +135,7 @@ def encode(part_size: int):
                     "id": i, "transcript": normalize(texts[i]["text"]),
                     "speaker": f"syn:{inp['ref_speaker']}", "ref_id": inp["ref_id"],
                     "source_type": "irodori", "duration": round(len(w) / 24000, 3),
-                    "lat_file": f"synth/s3/latents/part_{p // part_size:03d}.npy",
+                    "lat_file": f"latents/part_{p // part_size:03d}.npy",  # relative to the manifest
                     "lat_start": n, "lat_len": int(lat.shape[0]),
                     "speech_end": min(speech_end_frames(w), int(lat.shape[0])),
                 })
