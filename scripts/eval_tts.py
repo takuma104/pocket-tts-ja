@@ -83,10 +83,27 @@ def first_nonpara(spk: str) -> Path:
     return sorted((JVS / spk / "nonpara30" / "wav24kHz16bit").glob("*.wav"))[0]
 
 
+JKYB_SCHEMA_SETS = {
+    "jkyb_mini": REPO / "data" / "eval" / "jkyb_mini.jsonl",
+    # held-out Aozora works with ruby-verified readings (Irodori experiments, JKYB schema);
+    # excluded from the synthetic corpus, so it measures generalization beyond JKYB
+    "aozora": REPO / "data" / "eval" / "aozora_eval_1k.jsonl",
+}
+
+
 def build_items(which: str, voice: str, jvs_speakers: int) -> list[dict[str, Any]]:
-    if which in ("jkyb_mini", "jkyb"):
-        if which == "jkyb_mini":
-            path = REPO / "data" / "eval" / "jkyb_mini.jsonl"
+    if which == "jsut":
+        # JSUT BASIC5000 sentences with verified kana (jsut-label): general reading, Kana-CER
+        items = []
+        for line in open(REPO / "data" / "eval" / "jsut_eval_1k.jsonl"):
+            r = json.loads(line)
+            h = int(hashlib.md5(r["key"].encode()).hexdigest(), 16)
+            prompt = JVS001 if voice == "jvs001" else first_nonpara(ROTATION[h % len(ROTATION)])
+            items.append({"key": r["key"], "text": r["text"], "yomi": r["kana"], "prompt": str(prompt)})
+        return items, None  # type: ignore[return-value]
+    if which in ("jkyb_mini", "jkyb", "aozora"):
+        if which in JKYB_SCHEMA_SETS:
+            path = JKYB_SCHEMA_SETS[which]
         else:
             path = Path(
                 next(
@@ -209,7 +226,8 @@ def run_jvs_scoring(items: list[dict[str, Any]], audio_dir: Path, out_dir: Path)
         check=True, cwd=REPO,
     )
     cer = json.loads((out_dir / "cer.json").read_text())
-    cer["sim_ecapa"] = speaker_similarity(items, audio_dir)
+    if all("reference" in it for it in items):
+        cer["sim_ecapa"] = speaker_similarity(items, audio_dir)
     return cer
 
 
@@ -234,7 +252,7 @@ def speaker_similarity(items: list[dict[str, Any]], audio_dir: Path) -> float:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "jvs"), default="jkyb_mini")
+    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "aozora", "jvs", "jsut"), default="jkyb_mini")
     parser.add_argument("--snapshot", default="latest")
     parser.add_argument("--voice", choices=("rotation", "jvs001"), default="rotation")
     parser.add_argument("--cfg", type=float, default=2.0)
@@ -274,7 +292,7 @@ def main():
     torch.cuda.empty_cache()
 
     metrics: dict[str, float] = {f"{k}_count": float(v) for k, v in counts.items()}
-    if args.set in ("jkyb_mini", "jkyb"):
+    if args.set in ("jkyb_mini", "jkyb", "aozora"):
         summary = run_jkyb_eval(audio_dir, dataset, out_dir / "results")
         metrics.update(_jkyb_scalars(summary))
     else:
