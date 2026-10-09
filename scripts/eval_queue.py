@@ -32,15 +32,28 @@ def sh(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, check=check, text=True, capture_output=True, timeout=3 * 3600)
 
 
-def pending(run: Path) -> list[int]:
-    done_file = run / "eval_done.txt"
-    done = {int(x) for x in done_file.read_text().split()} if done_file.exists() else set()
-    steps = []
+def set_tag(s: str, jvs_speakers: int) -> str:
+    return f"{s}_rotation_cfg2.0" + (f"_n{jvs_speakers}" if s == "jvs" else "")
+
+
+def sets_for(step: int, args: argparse.Namespace) -> list[str]:
+    on_grid = step % args.extra_every == 0 and step >= args.extra_min_step
+    extra = args.extra_sets if (on_grid or step in args.extra_steps) else []
+    return list(args.sets) + list(extra)
+
+
+def pending(run: Path, args: argparse.Namespace) -> list[tuple[int, list[str]]]:
+    """(step, sets still missing a local metrics.json), newest snapshot first."""
+    out = []
     for p in sorted((run / "snapshots").glob("step_*.safetensors")):
         step = int(re.search(r"(\d+)", p.stem).group(1))  # type: ignore[union-attr]
-        if step not in done:
-            steps.append(step)
-    return sorted(steps, reverse=True)  # newest first: the latest snapshot matters most
+        missing = [
+            s for s in sets_for(step, args)
+            if not (run / "eval" / f"step{step:08d}" / set_tag(s, args.jvs_speakers) / "metrics.json").exists()
+        ]
+        if missing:
+            out.append((step, missing))
+    return sorted(out, reverse=True)  # newest first: the latest snapshot matters most
 
 
 def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int, keep: bool):
@@ -76,6 +89,10 @@ def main():
     parser.add_argument("--host", default="galleria2")
     parser.add_argument("--sets", nargs="+", default=["jkyb_mini", "jvs"])
     parser.add_argument("--jvs-speakers", type=int, default=10)
+    parser.add_argument("--extra-sets", nargs="*", default=[], help="also run these every --extra-every steps")
+    parser.add_argument("--extra-every", type=int, default=10000)
+    parser.add_argument("--extra-steps", type=int, nargs="*", default=[])
+    parser.add_argument("--extra-min-step", type=int, default=0)
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--keep-remote", action="store_true")
     parser.add_argument("--once", action="store_true")
@@ -84,9 +101,9 @@ def main():
         for run in args.runs:
             if not (run / "snapshots").exists():
                 continue
-            for step in pending(run):
+            for step, sets in pending(run, args):
                 try:
-                    ok = evaluate(run, step, args.host, args.sets, args.jvs_speakers, args.keep_remote)
+                    ok = evaluate(run, step, args.host, sets, args.jvs_speakers, args.keep_remote)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     print(f"{run.name} step {step}: remote unavailable ({exc}); retrying later", flush=True)
                     ok = False
