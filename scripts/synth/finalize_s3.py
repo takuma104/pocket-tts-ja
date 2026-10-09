@@ -19,6 +19,9 @@ scripts/synth/irodori_synth.py has written data/synth/s3/audio/<id>.wav:
     uv run --project third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition --extra asr \
         python scripts/synth/finalize_s3.py --qc
     uv run python scripts/synth/finalize_s3.py --encode
+
+Other synthetic sets reuse it with --dir / --texts / --input; with --tagged "" (no target
+words, e.g. the S4 short sentences) only the Sentence Kana-CER is checked.
 """
 
 import argparse
@@ -38,38 +41,37 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def qc(max_sentence_cer: float):
+def qc(max_sentence_cer: float, S3: Path, texts_path: Path, tagged_names: list[str]):
     from jkyb_eval.metrics import character_error_rate
     from jkyb_eval.normalization import canonicalize_yomi
 
     kana = {r["key"]: r["yomi"] for r in read_jsonl(S3 / "asr_audio" / "kana.jsonl")}
-    texts = {r["id"]: r for r in read_jsonl(ROOT / "texts.jsonl")}
-    # target exactness through the benchmark's own aligner
-    preds = S3 / "qc_g2p_predictions.jsonl"
-    with open(preds, "w", encoding="utf-8") as f:
-        for r in read_jsonl(ROOT / "texts_tagged_jkyb.jsonl"):
-            if r["key"] in kana:
-                f.write(json.dumps({"key": r["key"], "yomi": kana[r["key"]]}, ensure_ascii=False) + "\n")
-        for r in read_jsonl(ROOT / "texts_tagged_jkyb_extra.jsonl"):
-            base = r["key"].split("__t")[0]
-            if base in kana:
-                f.write(json.dumps({"key": r["key"], "yomi": kana[base]}, ensure_ascii=False) + "\n")
-    tagged = S3 / "qc_tagged_all.jsonl"
-    with open(tagged, "w", encoding="utf-8") as f:
-        for name in ("texts_tagged_jkyb.jsonl", "texts_tagged_jkyb_extra.jsonl"):
-            for r in read_jsonl(ROOT / name):
-                base = r["key"].split("__t")[0]
-                if base in kana:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    subprocess.run(
-        [str(Path(sys.executable).parent / "jkyb-eval"), "g2p", str(preds), "--dataset", str(tagged),
-         "--output-dir", str(S3 / "qc_g2p")],
-        check=True,
-    )
+    texts = {r["id"]: r for r in read_jsonl(texts_path)}
     exact: dict[str, bool] = {}
-    for r in read_jsonl(S3 / "qc_g2p" / "details" / "all.jsonl"):
-        base = r["key"].split("__t")[0]
-        exact[base] = exact.get(base, True) and bool(r["target_exact"])
+    if tagged_names:
+        # target exactness through the benchmark's own aligner
+        preds = S3 / "qc_g2p_predictions.jsonl"
+        with open(preds, "w", encoding="utf-8") as f:
+            for name in tagged_names:
+                for r in read_jsonl(ROOT / name):
+                    base = r["key"].split("__t")[0]  # extra targets of merged sentences
+                    if base in kana:
+                        f.write(json.dumps({"key": r["key"], "yomi": kana[base]}, ensure_ascii=False) + "\n")
+        tagged = S3 / "qc_tagged_all.jsonl"
+        with open(tagged, "w", encoding="utf-8") as f:
+            for name in tagged_names:
+                for r in read_jsonl(ROOT / name):
+                    base = r["key"].split("__t")[0]
+                    if base in kana:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        subprocess.run(
+            [str(Path(sys.executable).parent / "jkyb-eval"), "g2p", str(preds), "--dataset", str(tagged),
+             "--output-dir", str(S3 / "qc_g2p")],
+            check=True,
+        )
+        for r in read_jsonl(S3 / "qc_g2p" / "details" / "all.jsonl"):
+            base = r["key"].split("__t")[0]
+            exact[base] = exact.get(base, True) and bool(r["target_exact"])
     stats = {"clips": 0, "accepted": 0, "bad_sentence_cer": 0, "bad_target": 0, "no_yomi": 0}
     with open(S3 / "qc.jsonl", "w", encoding="utf-8") as f:
         for key, hyp in kana.items():
@@ -95,7 +97,7 @@ def qc(max_sentence_cer: float):
     print(json.dumps(stats, indent=2))
 
 
-def encode(part_size: int):
+def encode(part_size: int, S3: Path, texts_path: Path, input_path: Path):
     import numpy as np
     import soundfile as sf
     import torch
@@ -107,8 +109,8 @@ def encode(part_size: int):
     from precompute_emilia_ja import FRAME, speech_end_frames
 
     accepted = [r["id"] for r in read_jsonl(S3 / "qc.jsonl") if r["accepted"]]
-    inputs = {r["id"]: r for r in read_jsonl(ROOT / "s3_input.jsonl")}
-    texts = {r["id"]: r for r in read_jsonl(ROOT / "texts.jsonl")}
+    inputs = {r["id"]: r for r in read_jsonl(input_path)}
+    texts = {r["id"]: r for r in read_jsonl(texts_path)}
     device = torch.device("cuda")
     torch.backends.cuda.matmul.allow_tf32 = True
     mimi = load_mimi(load_pocket_config(), device)
@@ -166,11 +168,16 @@ def main():
     parser.add_argument("--encode", action="store_true")
     parser.add_argument("--max-sentence-cer", type=float, default=0.08)
     parser.add_argument("--part-size", type=int, default=20000)
+    parser.add_argument("--dir", type=Path, default=S3, help="synthetic set directory (audio/, asr_audio/)")
+    parser.add_argument("--texts", type=Path, default=ROOT / "texts.jsonl")
+    parser.add_argument("--input", type=Path, default=ROOT / "s3_input.jsonl")
+    parser.add_argument("--tagged", default="texts_tagged_jkyb.jsonl,texts_tagged_jkyb_extra.jsonl",
+                        help="comma-separated tagged-row files under data/synth ('' = no target check)")
     args = parser.parse_args()
     if args.qc:
-        qc(args.max_sentence_cer)
+        qc(args.max_sentence_cer, args.dir, args.texts, [n for n in args.tagged.split(",") if n])
     if args.encode:
-        encode(args.part_size)
+        encode(args.part_size, args.dir, args.texts, args.input)
 
 
 if __name__ == "__main__":

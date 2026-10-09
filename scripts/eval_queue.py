@@ -86,7 +86,7 @@ def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("runs", type=Path, nargs="+")
-    parser.add_argument("--host", default="galleria2")
+    parser.add_argument("--host", default="galleria2-direct")
     parser.add_argument("--sets", nargs="+", default=["jkyb_mini", "jvs"])
     parser.add_argument("--jvs-speakers", type=int, default=10)
     parser.add_argument("--extra-sets", nargs="*", default=[], help="also run these every --extra-every steps")
