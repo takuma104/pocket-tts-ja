@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--remote", default=None)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--jvs-sentences", type=int, default=3)
+    parser.add_argument("--jvs-tags", nargs="+", default=["jvs_bal_rotation_cfg2.0", "jvs_rotation_cfg2.0_n10"],
+                        help="JVS eval sets to use, first available wins (jvs_bal: 5 M + 5 F)")
     parser.add_argument("--jkyb-sentences", type=int, default=12)
     parser.add_argument("--short", type=int, default=0, help="number of short sentences (< 15 kana) to add")
     parser.add_argument("--include", nargs="*", default=[], help="add JKYB-mini sentences containing these")
@@ -72,15 +74,16 @@ def main():
     # JVS: speakers/sentences from the first run's eval items
     items_path = None
     for run in runs:
-        cand = list((run.path / run.step_dir).glob("jvs_*/items.json"))
-        if not cand and args.remote:
-            tag = "jvs_rotation_cfg2.0_n10"
-            (run.path / run.step_dir / tag).mkdir(parents=True, exist_ok=True)
-            subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{tag}/items.json",
-                            str(run.path / run.step_dir / tag / "items.json")], check=False)
-            cand = list((run.path / run.step_dir).glob("jvs_*/items.json"))
-        if cand:
-            items_path = cand[0]
+        for tag in args.jvs_tags:
+            cand = run.path / run.step_dir / tag / "items.json"
+            if not cand.exists() and args.remote:
+                cand.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{tag}/items.json",
+                                str(cand)], check=False, stderr=subprocess.DEVNULL)
+            if cand.exists():
+                items_path = cand
+                break
+        if items_path is not None:
             break
     if items_path is not None:
         items = json.loads(items_path.read_text())

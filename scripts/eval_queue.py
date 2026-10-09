@@ -39,7 +39,8 @@ def set_tag(s: str, jvs_speakers: int) -> str:
 def sets_for(step: int, args: argparse.Namespace) -> list[str]:
     on_grid = step % args.extra_every == 0 and step >= args.extra_min_step
     extra = args.extra_sets if (on_grid or step in args.extra_steps) else []
-    return list(args.sets) + list(extra)
+    main = args.sets if step >= args.min_step else []
+    return list(main) + [s for s in extra if s not in main]
 
 
 def pending(run: Path, args: argparse.Namespace) -> list[tuple[int, list[str]]]:
@@ -93,6 +94,7 @@ def main():
     parser.add_argument("--extra-every", type=int, default=10000)
     parser.add_argument("--extra-steps", type=int, nargs="*", default=[])
     parser.add_argument("--extra-min-step", type=int, default=0)
+    parser.add_argument("--min-step", type=int, default=0, help="--sets only for snapshots from this step on")
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--keep-remote", action="store_true")
     parser.add_argument("--once", action="store_true")

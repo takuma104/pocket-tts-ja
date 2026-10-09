@@ -4,6 +4,7 @@ Sets:
   jkyb_mini  data/eval/jkyb_mini.jsonl (1,500 JKYB-Parakeet rows), scored by `jkyb-eval tts`
   jkyb       the full 13,536 rows
   jvs        zero-shot voice cloning on JVS: --jvs-speakers speakers x 10 parallel100
+  jvs_bal    the same with 5 male + 5 female speakers (jvs is 8 M / 2 F)
              sentences, prompted by the speaker's first nonpara30 utterance; Kana-CER
              against the phoneme-label reading, Text CER, ECAPA similarity to the speaker's
              real recording of the same sentence, EOS failures
@@ -33,7 +34,7 @@ import safetensors.torch
 import soundfile as sf
 import torch
 
-from pocket_tts_ja.jvs import list_items
+from pocket_tts_ja.jvs import list_items, read_genders
 from pocket_tts_ja.text import normalize
 from training.args import load_args
 from training.modules.builders import build_models
@@ -122,9 +123,18 @@ def build_items(which: str, voice: str, jvs_speakers: int) -> list[dict[str, Any
                 prompt = first_nonpara(ROTATION[h % len(ROTATION)])
             items.append({"key": r["key"], "text": r["text"], "prompt": str(prompt)})
         return items, path  # type: ignore[return-value]
-    # JVS zero-shot: speakers spread over the id range, 10 fixed sentences each
+    # JVS zero-shot, 10 fixed sentences per speaker. "jvs": speakers spread over the id range
+    # (8 M / 2 F for 10). "jvs_bal": 5 M + 5 F spread over each gender's ids, excluding the
+    # JKYB rotation voices.
     rows = {i.key: i for i in list_items(JVS, ("parallel100",))}
-    spks = [f"jvs{n:03d}" for n in np.linspace(1, 100, jvs_speakers).round().astype(int)]
+    if which == "jvs_bal":
+        genders = read_genders(JVS)
+        spks = []
+        for g in ("M", "F"):
+            pool = sorted(k for k, v in genders.items() if v[0] == g and k not in ROTATION)
+            spks += [pool[i] for i in np.linspace(0, len(pool) - 1, jvs_speakers // 2).round().astype(int)]
+    else:
+        spks = [f"jvs{n:03d}" for n in np.linspace(1, 100, jvs_speakers).round().astype(int)]
     sentence_ids = [f"VOICEACTRESS100_{n:03d}" for n in range(5, 100, 10)]
     items = []
     for spk in spks:
@@ -252,7 +262,7 @@ def speaker_similarity(items: list[dict[str, Any]], audio_dir: Path) -> float:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "aozora", "jvs", "jsut"), default="jkyb_mini")
+    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "aozora", "jvs", "jvs_bal", "jsut"), default="jkyb_mini")
     parser.add_argument("--snapshot", default="latest")
     parser.add_argument("--voice", choices=("rotation", "jvs001"), default="rotation")
     parser.add_argument("--cfg", type=float, default=2.0)
@@ -268,6 +278,8 @@ def main():
 
     snap, step = snapshot_path(args.run_dir, args.snapshot)
     tag = f"{args.set}_{args.voice}_cfg{args.cfg}" + (f"_n{args.jvs_speakers}" if args.set == "jvs" else "")
+    if args.temp != 0.3:
+        tag += f"_t{args.temp}"
     if args.limit:
         tag += f"_limit{args.limit}"
     out_dir = args.run_dir / "eval" / f"step{step:08d}" / tag

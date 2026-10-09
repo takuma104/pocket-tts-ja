@@ -45,11 +45,14 @@ def main() -> None:
     parser.add_argument("--max-cer", type=float, default=0.3)
     parser.add_argument("--max-hyp-ratio", type=float, default=2.5, help="ASR loop guard: len(hyp)/len(ref)")
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--keep-unchecked", action="store_true", help="pass rows the recheck has not reached")
     parser.add_argument("--examples", type=int, default=0)
     args = parser.parse_args()
 
     hyps = {(r := json.loads(line))["id"]: r["kana"] for line in open(args.recheck)}
-    rows = [r for r in map(json.loads, open(args.manifest)) if r["id"] in hyps]
+    all_rows = [json.loads(line) for line in open(args.manifest)]
+    rows = [r for r in all_rows if r["id"] in hyps]
+    unchecked = [r for r in all_rows if r["id"] not in hyps]
     with Pool(args.workers) as pool:
         refs = pool.map(ref_reading, [r["transcript"] for r in rows], chunksize=512)
     stats = []
@@ -76,7 +79,12 @@ def main() -> None:
               f"{share('loop')} | {share('')} |")
     kept = [s[2] for s in stats if not s[1]]
     hours = sum(r["lat_len"] for r in kept) * 0.08 / 3600
-    print(f"\nkept {len(kept)} / {len(stats)} clips ({hours:.1f}h)")
+    print(f"\nkept {len(kept)} / {len(stats)} rechecked clips ({hours:.1f}h)")
+    if args.keep_unchecked and unchecked:
+        # recheck_asr.py goes shortest first, so a partial run covers the short clips
+        kept += unchecked
+        print(f"plus {len(unchecked)} clips not rechecked yet ({sum(r['lat_len'] for r in unchecked) * 0.08 / 3600:.1f}h), "
+              f"longer than {min(r['lat_len'] for r in unchecked) * 0.08:.1f}s")
     for _, reason, r, ref, hyp in [s for s in stats if s[1] == "extra"][: args.examples]:
         print(f"  [{reason}] {r['transcript']}\n      ref {ref}\n      asr {hyp}")
     if args.out:
