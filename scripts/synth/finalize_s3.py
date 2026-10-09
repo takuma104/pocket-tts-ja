@@ -7,7 +7,9 @@ scripts/synth/irodori_synth.py has written data/synth/s3/audio/<id>.wav:
   2. QC, in the JKYB environment (this script with --qc): Sentence Kana-CER of each clip
      against the row's yomi, and target-reading exactness via `jkyb-eval g2p` on the tagged
      rows (extra targets of merged sentences are re-keyed `<id>__t<k>`). Accept: Sentence
-     Kana-CER <= --max-sentence-cer and every target read correctly.
+     Kana-CER <= --max-sentence-cer (0.08: the sentences are literary and their yomi comes
+     from Sudachi, so 5% rejected half of the target-exact clips) and every target read
+     correctly.
   3. Mimi latents of the accepted clips + speech end (this script with --encode, root env)
      -> data/synth/s3/latents/part_<k>.npy and data/synth/s3/manifest.jsonl with
      speaker = "syn:<reference speaker>" and the reference's real Emilia utterance id.
@@ -117,8 +119,18 @@ def encode(part_size: int):
         ids = accepted[p : p + part_size]
         lats, rows, n = [], [], 0
         order = sorted(ids, key=lambda i: Path(S3 / "audio" / f"{i}.wav").stat().st_size)
-        for b in range(0, len(order), 32):
-            chunk = order[b : b + 32]
+        # length-sorted sub-batches capped at ~120 s of padded audio (the GPU is shared)
+        batches, cur, longest = [], [], 0
+        for i in order:
+            n_samples = (Path(S3 / "audio" / f"{i}.wav").stat().st_size - 44) // 2
+            longest = max(longest, n_samples)
+            if cur and longest * (len(cur) + 1) > 120 * 24000:
+                batches.append(cur)
+                cur, longest = [], n_samples
+            cur.append(i)
+        if cur:
+            batches.append(cur)
+        for chunk in batches:
             wavs = [sf.read(str(S3 / "audio" / f"{i}.wav"), dtype="float32")[0] for i in chunk]
             T = max(len(w) for w in wavs)
             T += (-T) % FRAME
@@ -140,6 +152,7 @@ def encode(part_size: int):
                     "speech_end": min(speech_end_frames(w), int(lat.shape[0])),
                 })
                 n += int(lat.shape[0])
+            del z, x
         np.save(lat_dir / f"part_{p // part_size:03d}.npy", np.concatenate(lats))
         for r in rows:
             out.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -151,7 +164,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qc", action="store_true")
     parser.add_argument("--encode", action="store_true")
-    parser.add_argument("--max-sentence-cer", type=float, default=0.05)
+    parser.add_argument("--max-sentence-cer", type=float, default=0.08)
     parser.add_argument("--part-size", type=int, default=20000)
     args = parser.parse_args()
     if args.qc:
