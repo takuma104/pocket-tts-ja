@@ -15,9 +15,20 @@ utterances concatenated), .../ecapa/<same>.npy (float16 [utts, 192]) and an inde
 .../latents/<same>.json. Shards already written are skipped, so the job is resumable.
 
     uv run python scripts/precompute_emilia_ja.py --readers 4
+
+Level augmentation (--gain-db LO HI): the training data sits at -24..-14 LUFS, and voice
+prompts quieter than that (JVS: -24..-31) came out quieter still, with a soft onset. This
+re-encodes the train utterances of a subset of shards (--select-mod/--select-rem on the shard
+key hash) with one gain per speaker, uniform in [LO, HI] dB from a hash of the speaker id (so
+prompt and target share it), peak-limited to 0.99. scripts/make_gain_manifest.py turns the
+output into training rows with speaker "gain:<speaker>".
+
+    uv run python scripts/precompute_emilia_ja.py --gain-db -15 3 --select-mod 5 \
+        --ids data/emilia_ja/train.jsonl --out data/emilia_ja_gain
 """
 
 import argparse
+import hashlib
 import io
 import json
 import multiprocessing as mp
@@ -45,6 +56,10 @@ ROOTS = {
 
 def shard_key(subset: str, shard: str) -> str:
     return f"{subset}__{Path(shard).stem}"
+
+
+def unit_hash(s: str) -> float:
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) / 2**128
 
 
 def speech_end_frames(wav: npt.NDArray[np.float32]) -> int:
@@ -144,19 +159,34 @@ def main():
     parser.add_argument("--batch-seconds", type=float, default=480.0)
     parser.add_argument("--max-batch", type=int, default=64)
     parser.add_argument("--limit-shards", type=int, default=0)
+    parser.add_argument("--gain-db", type=float, nargs=2, default=None, metavar=("LO", "HI"))
+    parser.add_argument("--select-mod", type=int, default=1, help="only shards with hash %% MOD == REM")
+    parser.add_argument("--select-rem", type=int, default=0)
+    parser.add_argument("--ids", type=Path, default=None, help="only utterances whose id is in this jsonl")
     args = parser.parse_args()
 
     lat_dir, ecapa_dir = args.out / "latents", args.out / "ecapa"
     lat_dir.mkdir(parents=True, exist_ok=True)
     ecapa_dir.mkdir(parents=True, exist_ok=True)
 
+    keep_ids: set[str] | None = None
+    if args.ids is not None:
+        keep_ids = {json.loads(line)["id"] for line in open(args.ids)}
+    gain: dict[str, float] = {}  # id -> linear gain
     by_shard: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     with open(args.manifest) as f:
         for line in f:
             d = json.loads(line)
+            if keep_ids is not None and d["id"] not in keep_ids:
+                continue
+            if args.select_mod > 1 and int(unit_hash(shard_key(d["subset"], d["shard"])) * 2**32) % args.select_mod != args.select_rem:
+                continue
             by_shard[(d["subset"], d["shard"])].append(
                 {"id": d["id"], "offset": d["offset"], "size": d["size"], "duration": d["duration"]}
             )
+            if args.gain_db is not None:
+                lo, hi = args.gain_db
+                gain[d["id"]] = 10 ** ((lo + (hi - lo) * unit_hash(f"gain:{d['speaker']}")) / 20)
     todo = [
         (s, sh, ents)
         for (s, sh), ents in sorted(by_shard.items())
@@ -205,7 +235,10 @@ def main():
                 j += 1
             j = max(j, i + 1)
             chunk = pending[i:j]
-            lats, embs = enc([c[2] for c in chunk])
+            wavs = [c[2] for c in chunk]
+            if gain:
+                wavs = [w * min(gain[c[1]], 0.99 / max(float(np.abs(w).max()), 1e-6)) for c, w in zip(chunk, wavs, strict=True)]
+            lats, embs = enc(wavs)
             for (key, uid, wav, end), lat, emb in zip(chunk, lats, embs, strict=True):
                 results[key][uid] = (lat, emb, min(end, lat.shape[0]))
                 audio_sec += len(wav) / SR

@@ -1,6 +1,7 @@
 # B1 on the rechecked Emilia (clips whose audio holds speech their transcript lacks removed,
-# shortest first), the full S3 synthetic corpus (15% of hours) and the S4 short sentences (3%);
-# resumes B1_4k from its latest checkpoint.
+# checked shortest first), a per-speaker gain-shifted copy of ~20% of its shards (-15..+3 dB,
+# for quiet voice prompts), the full S3 synthetic corpus (15% of hours) and the S4 short
+# sentences (3%); resumes B1_4k from its latest checkpoint.
 model_config: configs/model/ja_24l_4k.yaml
 start_from_pretrained: true
 reset_text_embedding: true
