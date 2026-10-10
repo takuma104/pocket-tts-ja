@@ -9,7 +9,9 @@ page; JVS audio is not redistributable, so keep the page local.
     uv run python scripts/make_listening_page.py --step 15000 runs/A5_8k runs/A5_4k \
         --remote galleria2-direct --out exp/listening/A5_step15000
 
-A run can carry its own step (`runs/B1_4k@155000`), so different stages can sit side by side.
+A run can carry its own step (`runs/B1_4k@155000`), so different stages can sit side by side,
+and its own generation setting (`runs/B1_4k@300000:cfg2.0_t0.5`, the suffix eval_tts.py gives the
+result directory), so a temperature / CFG sweep of one snapshot can.
 JKYB cells show the kana-whisper reading; `--short` adds a section of short sentences (where
 extra speech after the end of the text was most frequent) and `--include` adds the sentences
 containing the given words.
@@ -25,6 +27,7 @@ from pathlib import Path
 
 REMOTE_REPO = "~/co/pocket-tts-ja"
 JVS = Path("data/jvs_ver1")
+DEFAULT_VARIANT = "cfg2.0"  # temp 0.3 carries no suffix
 
 
 def local_path(p: str) -> Path:
@@ -37,11 +40,19 @@ def local_path(p: str) -> Path:
 
 class Run:
     def __init__(self, spec: str, default_step: int) -> None:
+        spec, _, variant = spec.partition(":")
         path, _, step = spec.partition("@")
         self.path = Path(path)
         self.step = int(step) if step else default_step
-        self.label = f"{self.path.name}@{self.step // 1000}k"
+        self.variant = variant or DEFAULT_VARIANT
+        shown = variant if "_t" in variant else f"{variant}_t0.3"
+        self.label = f"{self.path.name}@{self.step // 1000}k" + (f" {shown.replace('_', ' ')}" if variant else "")
+        self.slug = self.label.replace(" ", "_")
         self.step_dir = f"eval/step{self.step:08d}"
+
+    def tag(self, base: str) -> str:
+        """Result directory of this run's generation setting for an eval set named at the default."""
+        return base.replace(DEFAULT_VARIANT, self.variant)
 
 
 def fetch(remote: str | None, run: Path, rel: str, dst: Path):
@@ -72,31 +83,31 @@ def main():
     sections: list[str] = []
 
     # JVS: speakers/sentences from the first run's eval items
-    items_path = None
+    items_path: Path | None = None
+    jvs_base = ""
     for run in runs:
-        for tag in args.jvs_tags:
-            cand = run.path / run.step_dir / tag / "items.json"
+        for base in args.jvs_tags:
+            cand = run.path / run.step_dir / run.tag(base) / "items.json"
             if not cand.exists() and args.remote:
                 cand.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{tag}/items.json",
+                subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{run.tag(base)}/items.json",
                                 str(cand)], check=False, stderr=subprocess.DEVNULL)
             if cand.exists():
-                items_path = cand
+                items_path, jvs_base = cand, base
                 break
         if items_path is not None:
             break
     if items_path is not None:
         items = json.loads(items_path.read_text())
-        tag = items_path.parent.name
         by_spk: dict[str, list[dict]] = {}
         for it in items:
             by_spk.setdefault(it["key"].split("_")[0], []).append(it)
         heard: dict[str, dict[str, str]] = {}
         for run in runs:
-            kana = run.path / run.step_dir / tag / "asr_audio" / "kana.jsonl"
+            kana = run.path / run.step_dir / run.tag(jvs_base) / "asr_audio" / "kana.jsonl"
             if not kana.exists() and args.remote:
                 kana.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{tag}/asr_audio/kana.jsonl",
+                subprocess.run(["rsync", "-a", f"{args.remote}:{REMOTE_REPO}/{run.path.as_posix()}/{run.step_dir}/{run.tag(jvs_base)}/asr_audio/kana.jsonl",
                                 str(kana)], check=False)
             if kana.exists():
                 heard[run.label] = {(r := json.loads(l))["key"]: r["yomi"] for l in open(kana)}
@@ -107,8 +118,8 @@ def main():
             cells = [f"<td class='text'>{html.escape(it['text'])}<br><small>{html.escape(it.get('yomi', ''))}</small></td>",
                      f'<td><audio controls preload="none" src="audio/{real.name}"></audio></td>']
             for run in runs:
-                dst = audio / f"{run.label}_{it['key']}.wav"
-                fetch(args.remote, run.path, f"{run.step_dir}/{tag}/audio/{it['key']}.wav", dst)
+                dst = audio / f"{run.slug}_{it['key']}.wav"
+                fetch(args.remote, run.path, f"{run.step_dir}/{run.tag(jvs_base)}/audio/{it['key']}.wav", dst)
                 h = html.escape(heard.get(run.label, {}).get(it["key"], ""))
                 cells.append(f'<td><audio controls preload="none" src="audio/{dst.name}"></audio><br><small>{h}</small></td>')
             return "<tr>" + "".join(cells) + "</tr>"
@@ -137,9 +148,9 @@ def main():
                                 f"<table>{head}{''.join(rows)}</table>")
 
     # JKYB-mini: random sample, short sentences, requested words
-    tag = "jkyb_mini_rotation_cfg2.0"
     details: dict[str, dict[str, dict]] = {}
     for run in runs:
+        tag = run.tag("jkyb_mini_rotation_cfg2.0")
         p = run.path / run.step_dir / tag / "results" / "details" / "all.jsonl"
         if not p.exists() and args.remote:
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -162,8 +173,8 @@ def main():
                          f" / {html.escape(r['reference_yomi'])}</small></td>"]
                 for run in runs:
                     d = details.get(run.label, {}).get(key)
-                    dst = audio / f"{run.label}_{key}.wav"
-                    fetch(args.remote, run.path, f"{run.step_dir}/{tag}/audio/{key}.wav", dst)
+                    dst = audio / f"{run.slug}_{key}.wav"
+                    fetch(args.remote, run.path, f"{run.step_dir}/{run.tag('jkyb_mini_rotation_cfg2.0')}/audio/{key}.wav", dst)
                     mark = "?" if d is None else ("○" if d["target_exact"] else f"× ({html.escape(str(d.get('mapped_target')))})")
                     heard = "" if d is None else html.escape(str(d.get("prediction_yomi") or ""))
                     cells.append(f'<td><audio controls preload="none" src="audio/{dst.name}"></audio> {mark}'
@@ -183,7 +194,8 @@ def main():
 td,th{{border-bottom:1px solid #ddd;padding:4px 8px;text-align:left}}tr.spk th{{background:#eef}}
 td.text{{max-width:480px;font-size:14px}}audio{{width:240px}}</style></head><body>
 <h1>Listening page — {' / '.join(r.label for r in runs)}</h1>
-<p>Local only (JVS audio is not redistributable). Generation: temp 0.3, CFG 2.0, eos -4.
+<p>Local only (JVS audio is not redistributable). Generation: temp 0.3, CFG 2.0, eos -4 unless the
+column says otherwise.
 Small text under each JKYB sample: what kana-whisper heard.</p>
 {''.join(sections)}</body></html>"""
     (args.out / "index.html").write_text(page)
