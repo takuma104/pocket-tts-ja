@@ -13,7 +13,8 @@ The units and words come from the production lexicon (KANJIDIC2 / JMdict); no JK
            split into task files of (word, reading, gloss, n) for the writers
   verify   task files asking which reading each sentence of a homograph word uses
   collect  the writers' sentences -> s7_texts.jsonl. A sentence is kept when the word's stem
-           occurs exactly once as its own kanji run, it passes the S1 quality and leakage
+           occurs exactly once as its own kanji run (without okurigana the lexicon word does
+           not have), it passes the S1 quality and leakage
            rules, and (homographs) the verifier picked the intended reading. The yomi is the
            Sudachi reading with the word's reading applied; UniDic must agree outside the word.
            The teacher reads the word in kana.
@@ -261,6 +262,17 @@ def cmd_collect(args: argparse.Namespace) -> None:
             # the morpheme(s) holding the stem: only kana may surround it inside them
             before, after = text[s:max(s, min(a, e))], text[min(max(b, s), e):e]
             if KANJI.search(before) or KANJI.search(after):
+                ok = False
+            # 目差 (まなざし) written 目差し, 賭 (かけ) written 賭ける: the kana the sentence adds are
+            # part of the reading, so the stem no longer reads as the lexicon word does
+            trail = split_stem(item["word"])[2]
+            if after and not trail:
+                ok = False
+            # a conjugating word must continue as the lexicon word does (易い, not 易しい; 労る, not
+            # 労う): the same first okurigana, or a morpheme whose dictionary form starts like it
+            if trail and s <= a and text[b : b + 1] != trail[0] and not (
+                s == a and m.dictionary_form().startswith(text[a:b] + trail[0])
+            ):
                 ok = False
             if region is None:
                 region = (s, e)
