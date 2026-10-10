@@ -93,7 +93,7 @@ JKYB_SCHEMA_SETS = {
 }
 
 
-def build_items(which: str, voice: str, jvs_speakers: int) -> list[dict[str, Any]]:
+def build_items(which: str, voice: str, jvs_speakers: int, dataset: Path | None = None) -> list[dict[str, Any]]:
     if which == "jsut":
         # JSUT BASIC5000 sentences with verified kana (jsut-label): general reading, Kana-CER
         items = []
@@ -104,7 +104,9 @@ def build_items(which: str, voice: str, jvs_speakers: int) -> list[dict[str, Any
             items.append({"key": r["key"], "text": r["text"], "yomi": r["kana"], "prompt": str(prompt)})
         return items, None  # type: ignore[return-value]
     if which in ("jkyb_mini", "jkyb", "aozora"):
-        if which in JKYB_SCHEMA_SETS:
+        if dataset is not None:
+            path = dataset
+        elif which in JKYB_SCHEMA_SETS:
             path = JKYB_SCHEMA_SETS[which]
         else:
             path = Path(
@@ -316,12 +318,18 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--end-on-pause", action="store_true",
                         help="prepare prompts like the stock inference (end_on_pause)")
+    parser.add_argument("--dataset", type=Path, default=None,
+                        help="JKYB-schema jsonl to evaluate instead of a named set (e.g. the kana oracle); "
+                        "its stem names the result directory")
     parser.add_argument("--limit", type=int, default=0, help="first N items only (smoke tests)")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
     snap, step = snapshot_path(args.run_dir, args.snapshot)
-    tag = f"{args.set}_{args.voice}_cfg{args.cfg}" + (f"_n{args.jvs_speakers}" if args.set == "jvs" else "")
+    if args.dataset is not None:
+        args.set = "jkyb_mini"  # scored like any JKYB-schema set
+    name = args.dataset.stem if args.dataset is not None else args.set
+    tag = f"{name}_{args.voice}_cfg{args.cfg}" + (f"_n{args.jvs_speakers}" if args.set == "jvs" else "")
     if args.temp != 0.3:
         tag += f"_t{args.temp}"
     if args.end_on_pause:
@@ -331,7 +339,7 @@ def main():
     out_dir = args.run_dir / "eval" / f"step{step:08d}" / tag
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    items, dataset = build_items(args.set, args.voice, args.jvs_speakers)
+    items, dataset = build_items(args.set, args.voice, args.jvs_speakers, args.dataset)
     if args.limit:
         items = items[: args.limit]
         if dataset is not None:
