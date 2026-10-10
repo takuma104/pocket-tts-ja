@@ -24,20 +24,22 @@ pkill -f "$runner"
 while pgrep -f "$shard" >/dev/null; do sleep 60; done
 echo "$(date) recheck finished, YODAS3 runner held"
 
-synth() {  # input jsonl, set dir; re-run until every row has audio (the GPU may be full for a while)
+synth() {  # input jsonl, set dir; re-run after a crash (the GPU may be full for a while) until it runs to the end
   local rows; rows=$(wc -l < "$1")
-  mkdir -p "$2/audio"
-  for try in 1 2 3 4 5 6; do
+  mkdir -p "$2/audio" "$2/logs"
+  for try in $(seq 1 40); do
+    rm -f "$2/logs/summary_shard0.json"
     env PYTHONPATH=$IRODORI_ENV $UV run --project $IRODORI_ENV --no-sync python scripts/synth/irodori_synth.py \
       --input "$1" --output-dir "$2/audio" --log-dir "$2/logs" --checkpoint $CKPT --max-batch-frames 4096 \
       >> "$2/synth.log" 2>&1
-    [ "$(ls "$2/audio" | wc -l)" -ge "$rows" ] && return 0
-    echo "$(date) $2: try $try left $(( rows - $(ls "$2/audio" | wc -l) )) rows"; sleep 300
+    # the summary is written when the run reaches the end; rows that failed are logged and stay missing
+    [ -f "$2/logs/summary_shard0.json" ] && return 0
+    echo "$(date) $2: try $try stopped at $(ls "$2/audio" | wc -l) of $rows clips"; sleep 300
   done
-  return 0  # rows that never synthesize are simply missing from the QC
+  return 1
 }
 post_qc() {  # set dir, texts, tagged file names: kana-whisper transcripts, then the QC
-  for try in 1 2 3 4; do
+  for try in $(seq 1 12); do
     $UV run --python 3.13 --project $JKYB --extra asr python scripts/asr_transcribe.py "$1/audio" --skip-text && break
     sleep 300
   done
@@ -46,7 +48,7 @@ post_qc() {  # set dir, texts, tagged file names: kana-whisper transcripts, then
 }
 accepted() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accepted'])" "$1/qc_stats.json"; }
 run_set() {  # name, input, texts, tagged file names
-  synth "$2" $D/$1
+  synth "$2" $D/$1 || { echo "$(date) $1 synthesis kept failing"; return 1; }
   echo "$(date) $1 synthesized: $(ls $D/$1/audio | wc -l) clips"
   post_qc $D/$1 "$3" "$4" > $D/$1/post.log 2>&1 || { echo "$(date) $1 QC failed"; return 1; }
   for try in 1 2 3 4; do
@@ -61,7 +63,7 @@ S1_TAGGED=texts_tagged_jkyb.jsonl,texts_tagged_jkyb_extra.jsonl
 S6_TAGGED=s6_tagged_jkyb.jsonl,s6_tagged_jkyb_extra.jsonl
 
 for k in hira kata; do
-  synth $D/s5_pilot_$k.jsonl $D/s5_pilot_$k
+  synth $D/s5_pilot_$k.jsonl $D/s5_pilot_$k || exit 1
   post_qc $D/s5_pilot_$k $D/texts.jsonl $S1_TAGGED > $D/s5_pilot_$k/post.log 2>&1 || exit 1
 done
 h=$(accepted $D/s5_pilot_hira); k=$(accepted $D/s5_pilot_kata)
