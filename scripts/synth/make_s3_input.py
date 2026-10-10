@@ -26,6 +26,9 @@ def main() -> None:
     parser.add_argument("texts", type=Path)
     parser.add_argument("refs", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--text-field", default="text", help="field the teacher reads (S6: teacher_text_hira)")
+    parser.add_argument("--max-round", type=int, default=0, help="S6: rows selected up to this round only")
+    parser.add_argument("--min-round", type=int, default=0, help="S6: rows selected from this round on")
     args = parser.parse_args()
 
     refs = [json.loads(line) for line in args.refs.open(encoding="utf-8") if line.strip()]
@@ -36,10 +39,12 @@ def main() -> None:
             if not line.strip():
                 continue
             t = json.loads(line)
+            if (args.max_round and t["round"] > args.max_round) or (args.min_round and t["round"] < args.min_round):
+                continue
             ref = refs[h(t["id"], "ref") % len(refs)]
             row = {
                 "id": t["id"],
-                "text": t["text"],
+                "text": t[args.text_field],
                 "ref_wav": f"data/synth/refs/{ref['speaker']}.wav",
                 "ref_speaker": ref["speaker"],
                 "ref_id": ref["id"],

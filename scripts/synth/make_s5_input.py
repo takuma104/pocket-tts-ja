@@ -11,6 +11,11 @@ A row is selected when it was rejected and at least one tagged target was not ex
 target's word (the kanji run around it) is replaced by its reading; ids and reference voices
 are those of S3, the seed is new.
 
+Where the reading label is only the analyzers' (wiki_rare, prod, contrast) and the lexicon has
+another reading for the same written form (碑 = ひ / いしぶみ), the teacher's disagreement may
+be right, so those targets are left out; Aozora ruby and the LLM sentences written for a given
+reading keep all theirs.
+
     python3 scripts/synth/make_s5_input.py --kana hira --out data/synth/s5_input_hira.jsonl
     python3 scripts/synth/make_s5_input.py --kana kata --sample 1000 --out data/synth/s5_pilot_kata.jsonl
 """
@@ -27,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jkyb_kana_oracle import to_hiragana, word_region  # noqa: E402
 
 ROOT = Path("data/synth")
+LEXICON = Path.home() / "co/Irodori-TTS-Experiments/data/yomi_prod/lexicon.jsonl"
+ANALYZER_LABELLED = {"wiki_rare", "prod", "contrast"}
 MAX_KANA_PER_CHAR = 6
 
 
@@ -46,6 +53,7 @@ def main() -> None:
     parser.add_argument("--qc-dir", type=Path, default=ROOT / "s3_full" / "qc",
                         help="qc.jsonl and g2p_all.jsonl (qc_g2p/details/all.jsonl) of the S3 QC")
     parser.add_argument("--kana", choices=("hira", "kata"), default="hira")
+    parser.add_argument("--lexicon", type=Path, default=LEXICON, help="Irodori production lexicon (homographs)")
     parser.add_argument("--sample", type=int, default=0, help="a pilot subset of about N rows (hash of the id)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -59,6 +67,7 @@ def main() -> None:
             if base in rejected and not r["target_exact"]:
                 failed.setdefault(base, set()).add(r["key"])
     inputs = {r["id"]: r for r in read_jsonl(args.s3_input)}
+    homographs = {r["word"] for r in read_jsonl(args.lexicon) if r["homograph_readings"]}
 
     stats: Counter[str] = Counter()
     by_source: Counter[str] = Counter()
@@ -67,11 +76,18 @@ def main() -> None:
             keys = failed.get(t["id"])
             if not keys or (args.sample and pilot_hash(t["id"]) % len(failed) >= args.sample):
                 continue
-            targets = [t] + list(t.get("extra_targets") or [])
-            regions = sorted(
-                {word_region(x["tagged_text"], x["tagged_yomi"]) for x in targets if x["key"] in keys},
-                key=lambda r: (r[0], -r[1]),
-            )
+            targets = [x for x in [t] + list(t.get("extra_targets") or []) if x["key"] in keys]
+            regions = set()
+            for x in targets:
+                region = word_region(x["tagged_text"], x["tagged_yomi"])
+                if t["source"] in ANALYZER_LABELLED and {x.get("word"), t["text"][region[0] : region[1]]} & homographs:
+                    stats["homograph_targets_skipped"] += 1
+                    continue
+                regions.add(region)
+            if not regions:
+                stats["rows_only_homographs"] += 1
+                continue
+            regions = sorted(regions, key=lambda r: (r[0], -r[1]))
             if any(len(reading) > MAX_KANA_PER_CHAR * (end - start) for start, end, reading, _ in regions):
                 stats["misaligned"] += 1  # a reading far too long for its word
                 continue
@@ -92,7 +108,8 @@ def main() -> None:
             stats["rows"] += 1
             by_source[t["source"]] += 1
     print(f"{stats['rows']} rows, {stats['words']} words in kana ({stats['unaligned']} target-only; "
-          f"{stats['misaligned']} rows dropped as misaligned) -> {args.out}")
+          f"{stats['misaligned']} rows dropped as misaligned, {stats['rows_only_homographs']} with only homograph "
+          f"targets of analyzer-labelled sources) -> {args.out}")
     print("  " + ", ".join(f"{s} {n}" for s, n in by_source.most_common()))
 
 
