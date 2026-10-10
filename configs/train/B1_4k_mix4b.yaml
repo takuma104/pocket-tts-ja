@@ -1,0 +1,49 @@
+# B1 on mix v4: as mix v3, with the ASR recheck now covering every Emilia clip (v3 had it for
+# clips up to 7 s only); resumes B1_4k from its latest checkpoint. Constant LR, so max_steps is
+# only a stop: the final cosine phase is a separate run from the merged weights.
+model_config: configs/model/ja_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/B1_train_v4b.jsonl
+  valid_jsonl: data/emilia_ja/valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed by scripts/precompute_emilia_ja.py
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+run_dir: runs/B1_4k
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 500000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
