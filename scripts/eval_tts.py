@@ -124,7 +124,8 @@ def build_items(which: str, voice: str, jvs_speakers: int, dataset: Path | None 
             else:
                 h = int(hashlib.md5(r["key"].encode()).hexdigest(), 16)
                 prompt = first_nonpara(ROTATION[h % len(ROTATION)])
-            items.append({"key": r["key"], "text": r["text"], "prompt": str(prompt)})
+            # a kana-oracle row is generated from its kana variant and scored as the original
+            items.append({"key": r["key"], "text": r.get("tts_text") or r["text"], "prompt": str(prompt)})
         return items, path  # type: ignore[return-value]
     # JVS zero-shot, 10 fixed sentences per speaker. "jvs": speakers spread over the id range
     # (8 M / 2 F for 10). "jvs_bal": 5 M + 5 F spread over each gender's ids, excluding the

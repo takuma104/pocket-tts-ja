@@ -2,15 +2,16 @@
 
 If the model reads the kana version right where it misreads the kanji, the error is on the text
 side (it does not know the reading); if it still fails, the problem is acoustic (or the ASR).
-Ported from the Irodori experiments (jkyb_kana_oracle.py). For every row, `text` becomes:
+Ported from the Irodori experiments (jkyb_kana_oracle.py). Every row gets `tts_text`, the
+sentence the model is given instead of `text`:
 
   kata / hira  the whole kanji run around the target replaced by its reading (従容 -> ショウヨウ),
                aligned from tagged_yomi; when the alignment fails (digits next to the target
                etc.) only the target kanji is replaced
   char         only the target kanji replaced, in hiragana (交ぜ書き)
 
-The other fields are unchanged, so jkyb-eval scores the audio against the same yomi; the
-original sentence is kept as `text_orig` (Text CER is meaningless for these files).
+The JKYB fields are unchanged (jkyb-eval checks that tagged_text reduces to text), so the audio
+is scored against the same yomi; eval_tts.py generates from `tts_text` when a row has one.
 
     uv run python scripts/jkyb_kana_oracle.py data/eval/jkyb_mini.jsonl --out-dir data/eval/oracle
     uv run python scripts/eval_tts.py runs/B1_4k --snapshot 300000 --dataset data/eval/oracle/jkyb_mini_kata.jsonl
@@ -194,7 +195,7 @@ def main() -> None:
             kana_word = {"word": word, "reading": reading}
         texts["char"] = substitute_char(row, True)
         for name, text in texts.items():
-            out[name].append({**row, "text": text, "text_orig": row["text"], "kana_word": kana_word})
+            out[name].append({**row, "tts_text": text, "kana_word": kana_word})
     for name, variant in out.items():
         path = args.out_dir / f"{args.dataset.stem}_{name}.jsonl"
         with path.open("w", encoding="utf-8") as f:

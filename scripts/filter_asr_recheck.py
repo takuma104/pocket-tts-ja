@@ -4,7 +4,9 @@ The transcript's reading (pyopenjtalk) is aligned to the kana-whisper transcript
 (both canonicalized as in JKYB). Kana the ASR heard that the transcript lacks are insertions;
 fillers are removed from both sides first, so a dropped "えー" alone does not count. A clip is
 dropped when the insertions reach max(--min-insert, --insert-frac x reference length), when
-the ASR ran into its token limit (hallucinated loops), or when the CER exceeds --max-cer.
+the ASR output is far longer than the reference (hallucinated loops), or when the CER exceeds
+--max-cer. Long clips whose transcript stops at the ASR token limit are scored on the part of
+the reference the transcript covers.
 
     uv run python scripts/filter_asr_recheck.py data/emilia_ja/train.jsonl data/emilia_ja/asr_recheck.jsonl \
         --out data/emilia_ja/train_rechecked.jsonl
@@ -29,9 +31,17 @@ def ref_reading(text: str) -> str:
     return strip_fillers(reading(text))
 
 
-def compare(ref: str, hyp: str) -> dict[str, float]:
-    ops = Levenshtein.opcodes(ref, hyp)
+def compare(ref: str, hyp: str, truncated: bool = False) -> dict[str, float]:
+    """Inserted kana and CER of the ASR transcript against the reference reading.
+
+    A truncated transcript (the ASR stopped at its token limit on a long clip) is scored on the
+    part of the reference it reaches: the reference tail it never got to is not an error.
+    """
+    ops = list(Levenshtein.opcodes(ref, hyp))
     ins = sum(o.dest_end - o.dest_start for o in ops if o.tag == "insert")
+    if truncated and ops and ops[-1].tag == "delete":
+        errors = sum(max(o.src_end - o.src_start, o.dest_end - o.dest_start) for o in ops[:-1] if o.tag != "equal")
+        return {"ins": ins, "cer": errors / max(ops[-1].src_start, 1)}
     return {"ins": ins, "cer": Levenshtein.distance(ref, hyp) / max(len(ref), 1)}
 
 
@@ -46,6 +56,9 @@ def main() -> None:
     parser.add_argument("--max-hyp-ratio", type=float, default=2.5, help="ASR loop guard: len(hyp)/len(ref)")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--keep-unchecked", action="store_true", help="pass rows the recheck has not reached")
+    parser.add_argument("--truncated-at", type=int, default=115,
+                        help="ASR transcripts of this many kana or more ran into recheck_asr.py's token limit "
+                        "(128 tokens: the output levels off at ~125 kana for clips over 15 s)")
     parser.add_argument("--examples", type=int, default=0)
     args = parser.parse_args()
 
@@ -58,7 +71,7 @@ def main() -> None:
     stats = []
     for r, ref in zip(rows, refs, strict=True):
         hyp = strip_fillers(canonical_kana(hyps[r["id"]]))
-        s = compare(ref, hyp)
+        s = compare(ref, hyp, truncated=len(hyps[r["id"]]) >= args.truncated_at)
         loop = len(hyp) > args.max_hyp_ratio * max(len(ref), 4)
         extra = s["ins"] >= max(args.min_insert, args.insert_frac * len(ref))
         bad_cer = s["cer"] > args.max_cer
