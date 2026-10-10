@@ -200,7 +200,7 @@ def freq_bin(n: int) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("results_dir", type=Path, help="jkyb-eval output (details/all.jsonl, summary.json)")
+    parser.add_argument("results_dir", type=Path, help="jkyb-eval output (details/all.jsonl)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, default=Path("data/tokenizer/ja_4k.model"))
     parser.add_argument("--train", type=Path, default=None, help="training manifest for the word-frequency table")
@@ -212,7 +212,6 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = read_jsonl(args.results_dir / "details" / "all.jsonl")
-    metrics = json.loads((args.results_dir / "summary.json").read_text())["metrics"]
     readings, by_category = reading_tables(rows + (read_jsonl(args.readings_from) if args.readings_from else []))
     if not args.readings_from:
         print("no --readings-from: other readings come from the evaluated rows only")
@@ -227,11 +226,11 @@ def main() -> None:
     errors = [r for r in rows if r["error_type"]]
 
     out = [f"# JKYB 読み誤りの分類: {args.results_dir.parent}", ""]
+    # from the rows themselves: summary.json may come from another run of the same eval
     out.append(table(["指標", "値"], [
-        ["Accuracy", f"{metrics['accuracy']['rate']:.2%}"],
-        ["Relaxed Accuracy", f"{metrics['relaxed_accuracy']['rate']:.2%}"],
-        ["Target Kana-CER@1", f"{metrics['target_kana_cer']['cer_at_1']:.2%}"],
-        ["Sentence Kana-CER@1", f"{metrics['sentence_kana_cer']['cer_at_1']:.2%}"],
+        ["例文数", str(len(rows))],
+        ["Accuracy", f"{sum(bool(r['target_exact']) for r in rows) / len(rows):.2%}"],
+        ["Relaxed Accuracy", f"{sum(bool(r['relaxed_target_exact']) for r in rows) / len(rows):.2%}"],
     ]))
 
     out += ["", "## 読み分類別", ""]
