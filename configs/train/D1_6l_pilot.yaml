@@ -1,0 +1,54 @@
+# D1 pilot: 6-layer student distilled from the 24-layer B1 teacher (step 300k), upstream
+# depth_distill.yaml recipe: the student's backbone regresses onto the teacher's
+# guidance-combined backbone output (distill_cfg_coef 2.0, so CFG is baked in and the stock
+# inference, which has no CFG, reproduces the guided teacher); flow head and EOS head are the
+# teacher's, frozen. A short cosine to see how far 6 layers fall behind on the readings
+# before the final teacher exists. Run with scripts/train_ja.py.
+model_config: configs/model/ja_6l_4k.yaml
+start_from_pretrained: false
+distill_cfg_coef: 2.0
+distill_teacher_config: configs/model/ja_24l_4k.yaml
+distill_teacher_weights: runs/B1_4k/weights_300000.safetensors   # scripts/merge_snapshot_weights.py
+
+data:
+  train_jsonl: data/mix/B1_train_v3.jsonl
+  valid_jsonl: data/emilia_ja/valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+
+# no CFG dropout: the teacher's targets are fully conditioned and the student never runs a
+# null branch (upstream note)
+text_dropout: 0.0
+voice_dropout: 0.0
+
+optim:
+  lr: 4e-4
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/D1_6l_pilot
+batch_size: 64
+grad_accum_steps: 1
+max_steps: 60000
+stats_ema_steps: 0        # keep the teacher's latent normalization
+ema_decay: 0.9999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 1.0      # the student is sampled without CFG
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
