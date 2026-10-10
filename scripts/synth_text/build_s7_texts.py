@@ -40,6 +40,9 @@ from synth_filters import HIRAGANA, KANJI, leak_key, quality_reason, read_jsonl,
 from synth_leakage import LeakageIndex  # noqa: E402
 from synth_wiki import convention_reading, split_stem, stem_reading  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from analyze_jkyb_errors import strip_sound_change  # noqa: E402
+
 SYNTH = REPO / "data/synth"
 S7 = SYNTH / "s7"
 QC_YIELD = 0.7  # expected share of written sentences that survive collection and the audio QC
@@ -134,6 +137,13 @@ def cmd_tasks(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- collect
 
 
+def rivals(item: dict[str, Any]) -> list[str]:
+    """Other readings of the written form that are a different word, not a spelling of the same
+    sounds (おばあさん / おばーさん) or a sound-changed variant (みっつ / みつ)."""
+    own = strip_sound_change(to_katakana(item["reading"]))
+    return [r for r in item["other_readings"] if strip_sound_change(to_katakana(r)) != own]
+
+
 def load_written(words: dict[str, dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
     """(word item, sentence) pairs from the writers' files; junk lines are skipped."""
     out = []
@@ -170,10 +180,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
     rows = []
     seen: set[str] = set()
     for item, text in load_written(words):
-        if not item["other_readings"] or text in seen or stem_span(item, text) is None:
+        if not rivals(item) or text in seen or stem_span(item, text) is None:
             continue
         seen.add(text)
-        choices = sorted([item["reading"], *item["other_readings"]])
+        choices = sorted([item["reading"], *rivals(item)])
         rows.append({"vid": f"v{len(rows):05d}", "text": text, "word": item["word"], "choices": choices,
                      "intended": item["reading"]})
     (S7 / "verify").mkdir(parents=True, exist_ok=True)
@@ -220,7 +230,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
         if ASCII_OR_DIGIT.search(text) or quality_reason(text, min_len=8, max_len=60) is not None:
             stats["quality"] += 1
             continue
-        if item["other_readings"]:
+        if rivals(item):
             if verdict is None or text not in verdict:
                 stats["homograph_unverified"] += 1
                 continue
