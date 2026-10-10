@@ -24,8 +24,10 @@ from pathlib import Path
 from typing import Any
 
 KANJI = re.compile(r"[㐀-鿿々〆ヶ]")
-KANA_PARTICLE_VARIANTS = {"は": "[ハワ]", "へ": "[ヘエ]", "を": "[ヲオ]"}
 PUNCTUATION = set("、。？！「」『』・，．?!")
+KANA_PARTICLE_SOUNDS = {"は": "ワ", "へ": "エ", "を": "オ"}
+MAX_KANA_PER_CHAR = 12  # a run of digits/latin can read long (A4 -> エーヨン)
+YOMI_BREAKS = PUNCTUATION | {"<", ">"}
 
 
 def to_katakana(text: str) -> str:
@@ -62,23 +64,55 @@ def segment(tagged_text: str) -> list[Segment]:
 
 
 def align_runs(tagged_text: str, tagged_yomi: str) -> list[tuple[Segment, str]] | None:
-    """Pair each segment with its reading, or None when the alignment fails."""
+    """Pair each segment with its reading, or None when the alignment fails.
+
+    Kana and tags match themselves (は/へ/を also their particle sounds), punctuation is
+    optional, and a run takes the shortest reading that lets the rest match. The search is
+    memoized on (segment, yomi position): long literary sentences with many kanji runs made
+    the equivalent regex backtrack exponentially.
+    """
     segments = segment(tagged_text)
-    parts: list[str] = []
-    for seg in segments:
+    n, m = len(segments), len(tagged_yomi)
+    dead: set[tuple[int, int]] = set()
+    lengths: list[int] = [0] * n
+
+    def options(seg: Segment, j: int) -> list[int]:
         if seg.kind in ("open", "close"):
-            parts.append(re.escape(seg.text))
-        elif seg.kind == "kana":
-            parts.append("(" + KANA_PARTICLE_VARIANTS.get(seg.text, re.escape(to_katakana(seg.text))) + ")")
-        elif seg.kind == "punct":
-            parts.append("(" + re.escape(seg.text) + "?)")
-        else:
-            parts.append("(.+?)")
-    match = re.fullmatch("".join(parts), tagged_yomi)
-    if match is None:
-        return None
-    groups = iter(match.groups())
-    return [(seg, seg.text if seg.kind in ("open", "close") else next(groups)) for seg in segments]
+            return [1] if tagged_yomi.startswith(seg.text, j) else []
+        if seg.kind == "kana":
+            kana = to_katakana(seg.text)
+            allowed = {kana, *KANA_PARTICLE_SOUNDS.get(seg.text, "")}
+            return [1] if j < m and tagged_yomi[j] in allowed else []
+        if seg.kind == "punct":
+            return ([1] if tagged_yomi.startswith(seg.text, j) else []) + [0]
+        limit = min(m - j, MAX_KANA_PER_CHAR * len(seg.text))
+        stop = next((k for k in range(limit) if tagged_yomi[j + k] in YOMI_BREAKS), limit)
+        return list(range(1, stop + 1))  # a reading never runs across punctuation or a tag
+
+    # iterative depth-first search (sentences have up to ~100 segments, but stay off the recursion limit)
+    stack: list[tuple[int, int, list[int]]] = [(0, 0, options(segments[0], 0))] if n else []
+    while stack:
+        i, j, todo = stack[-1]
+        if not todo:
+            dead.add((i, j))
+            stack.pop()
+            continue
+        k = todo.pop(0)
+        lengths[i] = k
+        if i + 1 == n:
+            if j + k == m:
+                break
+            continue
+        if (i + 1, j + k) not in dead:
+            stack.append((i + 1, j + k, options(segments[i + 1], j + k)))
+    else:
+        if n or m:
+            return None
+    out, j = [], 0
+    for seg, k in zip(segments, lengths, strict=True):
+        out.append((seg, tagged_yomi[j : j + k]))
+        j += k
+    return out
 
 
 def word_span(aligned: list[tuple[Segment, str]]) -> tuple[int, int] | None:
@@ -113,6 +147,24 @@ def substitute_word(row: dict[str, Any]) -> tuple[str, str, str, str] | None:
     before = "".join(seg.text for seg, _ in aligned[:start] if seg.kind not in ("open", "close"))
     after = "".join(seg.text for seg, _ in aligned[end:] if seg.kind not in ("open", "close"))
     return before, word, reading, after
+
+
+def word_region(tagged_text: str, tagged_yomi: str) -> tuple[int, int, str, bool]:
+    """(start, end, katakana reading, aligned) of the target word in the untagged text.
+
+    The word is the kanji run around the target; when the alignment fails it is the tagged
+    span itself (aligned = False).
+    """
+    aligned = align_runs(tagged_text, tagged_yomi)
+    span = word_span(aligned) if aligned else None
+    if aligned is None or span is None:
+        start = tagged_text.index("<")
+        reading = re.search(r"<([^>]+)>", tagged_yomi).group(1)  # type: ignore[union-attr]
+        return start, tagged_text.index(">") - 1, reading, False
+    first, last = span
+    start = sum(len(seg.text) for seg, _ in aligned[:first] if seg.kind not in ("open", "close"))
+    length = sum(len(seg.text) for seg, _ in aligned[first:last] if seg.kind == "run")
+    return start, start + length, "".join(y for seg, y in aligned[first:last] if seg.kind == "run"), True
 
 
 def substitute_char(row: dict[str, Any], hiragana: bool) -> str:
