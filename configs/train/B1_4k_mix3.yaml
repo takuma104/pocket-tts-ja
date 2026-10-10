@@ -34,7 +34,7 @@ optim:
 run_dir: runs/B1_4k
 batch_size: 16
 grad_accum_steps: 4
-max_steps: 300000
+max_steps: 400000
 stats_ema_steps: 1000
 ema_decay: 0.999
 log_freq: 50
