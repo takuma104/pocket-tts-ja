@@ -32,8 +32,8 @@ def sh(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, check=check, text=True, capture_output=True, timeout=3 * 3600)
 
 
-def set_tag(s: str, jvs_speakers: int) -> str:
-    return f"{s}_rotation_cfg2.0" + (f"_n{jvs_speakers}" if s == "jvs" else "")
+def set_tag(s: str, jvs_speakers: int, cfg: float = 2.0) -> str:
+    return f"{s}_rotation_cfg{cfg}" + (f"_n{jvs_speakers}" if s == "jvs" else "")
 
 
 def sets_for(step: int, args: argparse.Namespace) -> list[str]:
@@ -50,21 +50,21 @@ def pending(run: Path, args: argparse.Namespace) -> list[tuple[int, list[str]]]:
         step = int(re.search(r"(\d+)", p.stem).group(1))  # type: ignore[union-attr]
         missing = [
             s for s in sets_for(step, args)
-            if not (run / "eval" / f"step{step:08d}" / set_tag(s, args.jvs_speakers) / "metrics.json").exists()
+            if not (run / "eval" / f"step{step:08d}" / set_tag(s, args.jvs_speakers, args.cfg) / "metrics.json").exists()
         ]
         if missing:
             out.append((step, missing))
     return sorted(out, reverse=True)  # newest first: the latest snapshot matters most
 
 
-def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int, keep: bool):
+def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int, keep: bool, cfg: float = 2.0):
     rrun = f"{REMOTE_REPO}/{run.as_posix()}"
     snap = run / "snapshots" / f"step_{step:08d}.safetensors"
     sh(["ssh", host, f"mkdir -p {rrun}/snapshots"])
     sh(["rsync", "-a", str(run / "args.yaml"), str(run / "wandb_id.txt"), f"{host}:{rrun}/"])
     sh(["rsync", "-a", str(snap), f"{host}:{rrun}/snapshots/"])
     for s in sets:
-        extra = f"--jvs-speakers {jvs_speakers}" if s == "jvs" else ""
+        extra = f"--cfg {cfg}" + (f" --jvs-speakers {jvs_speakers}" if s == "jvs" else "")
         cmd = f"cd {REMOTE_REPO} && {UV} run python scripts/eval_tts.py {shlex.quote(run.as_posix())} --set {s} --snapshot {step} {extra}"
         res = sh(["ssh", host, cmd], check=False)
         log = run / "eval_logs"
@@ -90,6 +90,7 @@ def main():
     parser.add_argument("--host", default="galleria2-direct")
     parser.add_argument("--sets", nargs="+", default=["jkyb_mini", "jvs"])
     parser.add_argument("--jvs-speakers", type=int, default=10)
+    parser.add_argument("--cfg", type=float, default=2.0, help="1.0 for a distilled student (guidance is baked in)")
     parser.add_argument("--extra-sets", nargs="*", default=[], help="also run these every --extra-every steps")
     parser.add_argument("--extra-every", type=int, default=10000)
     parser.add_argument("--extra-steps", type=int, nargs="*", default=[])
@@ -105,7 +106,7 @@ def main():
                 continue
             for step, sets in pending(run, args):
                 try:
-                    ok = evaluate(run, step, args.host, sets, args.jvs_speakers, args.keep_remote)
+                    ok = evaluate(run, step, args.host, sets, args.jvs_speakers, args.keep_remote, args.cfg)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     print(f"{run.name} step {step}: remote unavailable ({exc}); retrying later", flush=True)
                     ok = False
