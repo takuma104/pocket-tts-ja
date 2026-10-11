@@ -49,6 +49,11 @@ PROMPT_MODES = (("prefix", 0.50), ("full", 0.35), ("concat", 0.15))
 PREFIX_SEC = (3.0, 10.0)
 MIN_PROMPT_FRAMES = 13  # ~1 s
 
+# One memory map per latent file for the whole process: the trainer builds a new validation
+# loader at every validation and never drops the old one (its prefetch thread stays blocked),
+# so per-loader maps leak one file descriptor per file and validation.
+_MMAPS: dict[str, npt.NDArray[np.float16]] = {}
+
 
 class _Corpus:
     """All manifest rows as compact arrays, plus speaker -> row indices."""
@@ -79,20 +84,19 @@ class _Corpus:
         for i, s in enumerate(self.speaker.tolist()):
             by_spk[s].append(i)
         self.by_speaker = {s: np.asarray(v, dtype=np.int64) for s, v in by_spk.items()}
-        self._mmaps: dict[int, npt.NDArray[np.float16]] = {}
 
     def __len__(self) -> int:
         return len(self.texts)
 
     def latents(self, i: int, trim_silence: bool = True) -> npt.NDArray[np.float16]:
-        f = int(self.file_idx[i])
-        if f not in self._mmaps:
-            self._mmaps[f] = np.load(self.paths[f], mmap_mode="r")
+        path = self.paths[int(self.file_idx[i])]
+        if path not in _MMAPS:
+            _MMAPS[path] = np.load(path, mmap_mode="r")
         n = int(self.length[i])
         if trim_silence:
             n = min(n, int(self.speech_end[i]) + TRAIL_FRAMES)
         s = int(self.start[i])
-        return self._mmaps[f][s : s + max(1, n)]
+        return _MMAPS[path][s : s + max(1, n)]
 
     def others(self, i: int) -> npt.NDArray[np.int64]:
         cands = self.by_speaker[int(self.speaker[i])]

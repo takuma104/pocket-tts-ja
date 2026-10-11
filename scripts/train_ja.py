@@ -16,7 +16,9 @@ import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+import resource
 import sys
+import traceback
 from pathlib import Path
 
 import safetensors.torch
@@ -69,7 +71,16 @@ def main(config_path: str):
 
 if __name__ == "__main__":
     assert len(sys.argv) == 2, "usage: train_ja.py <config.yaml>"
-    main(sys.argv[1])
+    # an ssh shell starts with 1024 file descriptors; the latent files alone are several hundred
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    try:
+        main(sys.argv[1])
+    except Exception:
+        # the loader threads would keep a failed run alive (and its GPU memory) for ever
+        traceback.print_exc()
+        sys.stderr.flush()
+        os._exit(1)
     # Loader subprocesses and wandb's service can keep the interpreter alive after training
     # finished (holding GPU memory); everything is saved by now.
     os._exit(0)
