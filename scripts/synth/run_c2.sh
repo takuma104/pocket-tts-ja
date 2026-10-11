@@ -10,7 +10,9 @@
 #   s6b    the rest of S6 (towards 300 exposures)
 # in that order of expected gain per GPU hour. Each set is synthesized, QC'd (targets exact and
 # Sentence Kana-CER <= 0.08 against the original yomi) and encoded; <set>/POST_DONE marks it
-# ready to fetch. YODAS3 resumes at the end.
+# ready to fetch. YODAS3 resumes at the end. After a reboot, start it again with >> instead of >:
+# the pilot (c2_kana_form) and the sets that have POST_DONE are skipped, the synthesis of the
+# interrupted set continues from the clips that exist.
 set -u
 cd "$(dirname "$0")/../.."
 UV=${UV:-$HOME/.local/bin/uv}
@@ -48,6 +50,7 @@ post_qc() {  # set dir, texts, tagged file names: kana-whisper transcripts, then
 }
 accepted() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accepted'])" "$1/qc_stats.json"; }
 run_set() {  # name, input, texts, tagged file names
+  [ -f $D/$1/POST_DONE ] && return 0
   synth "$2" $D/$1 || { echo "$(date) $1 synthesis kept failing"; return 1; }
   echo "$(date) $1 synthesized: $(ls $D/$1/audio | wc -l) clips"
   post_qc $D/$1 "$3" "$4" > $D/$1/post.log 2>&1 || { echo "$(date) $1 QC failed"; return 1; }
@@ -62,17 +65,21 @@ run_set() {  # name, input, texts, tagged file names
 S1_TAGGED=texts_tagged_jkyb.jsonl,texts_tagged_jkyb_extra.jsonl
 S6_TAGGED=s6_tagged_jkyb.jsonl,s6_tagged_jkyb_extra.jsonl
 
-for k in hira kata; do
-  synth $D/s5_pilot_$k.jsonl $D/s5_pilot_$k || exit 1
-  post_qc $D/s5_pilot_$k $D/texts.jsonl $S1_TAGGED > $D/s5_pilot_$k/post.log 2>&1 || exit 1
-done
-h=$(accepted $D/s5_pilot_hira); k=$(accepted $D/s5_pilot_kata)
-form=hira; [ "$k" -gt "$h" ] && form=kata
-echo "$(date) pilot accepted of $(wc -l < $D/s5_pilot_hira.jsonl): hiragana $h, katakana $k -> $form"
-echo $form > $D/c2_kana_form
+if [ -f $D/c2_kana_form ]; then
+  form=$(cat $D/c2_kana_form)
+else
+  for k in hira kata; do
+    synth $D/s5_pilot_$k.jsonl $D/s5_pilot_$k || exit 1
+    post_qc $D/s5_pilot_$k $D/texts.jsonl $S1_TAGGED > $D/s5_pilot_$k/post.log 2>&1 || exit 1
+  done
+  h=$(accepted $D/s5_pilot_hira); k=$(accepted $D/s5_pilot_kata)
+  form=hira; [ "$k" -gt "$h" ] && form=kata
+  echo "$(date) pilot accepted of $(wc -l < $D/s5_pilot_hira.jsonl): hiragana $h, katakana $k -> $form"
+  echo $form > $D/c2_kana_form
+fi
 
 run_set s6a $D/s6a_input_$form.jsonl $D/s6_texts.jsonl $S6_TAGGED
-mkdir -p $D/s5/audio && cp -n $D/s5_pilot_$form/audio/*.wav $D/s5/audio/
+[ -f $D/s5/POST_DONE ] || { mkdir -p $D/s5/audio && cp -n $D/s5_pilot_$form/audio/*.wav $D/s5/audio/; }
 run_set s5 $D/s5_input_$form.jsonl $D/texts.jsonl $S1_TAGGED
 run_set s6b $D/s6b_input_$form.jsonl $D/s6_texts.jsonl $S6_TAGGED
 
