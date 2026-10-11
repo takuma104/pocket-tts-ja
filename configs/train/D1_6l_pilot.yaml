@@ -1,4 +1,4 @@
-# D1 pilot: 6-layer student distilled from the 24-layer B1 teacher (step 300k), upstream
+# D1 pilot: 6-layer student distilled from the 24-layer B1 teacher (step 520000), upstream
 # depth_distill.yaml recipe: the student's backbone regresses onto the teacher's
 # guidance-combined backbone output (distill_cfg_coef 2.0, so CFG is baked in and the stock
 # inference, which has no CFG, reproduces the guided teacher); flow head and EOS head are the
@@ -8,10 +8,10 @@ model_config: configs/model/ja_6l_4k.yaml
 start_from_pretrained: false
 distill_cfg_coef: 2.0
 distill_teacher_config: configs/model/ja_24l_4k.yaml
-distill_teacher_weights: runs/B1_4k/weights_300000.safetensors   # scripts/merge_snapshot_weights.py
+distill_teacher_weights: runs/B1_4k/weights_520000.safetensors   # scripts/merge_snapshot_weights.py
 
 data:
-  train_jsonl: data/mix/B1_train_v3.jsonl
+  train_jsonl: data/mix/B1_train_v8.jsonl
   valid_jsonl: data/emilia_ja/valid.jsonl
   max_duration_sec: 30.0
   max_voice_prompt_sec: 30.0
