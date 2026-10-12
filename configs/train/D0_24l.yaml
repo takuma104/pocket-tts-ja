@@ -1,0 +1,54 @@
+# D0: bake CFG 2.0 into the final 24-layer B1 teacher (step 660k) for the 24-layer release:
+# the stock inference has no CFG. Same recipe as D1 with a student of the teacher's own depth,
+# so it starts as an exact copy of the teacher (all 24 layers) and only has to move its
+# backbone output from the conditioned one to the guidance-combined one; flow head and EOS
+# head stay frozen. LR and micro-batch are B1's (2e-4, 16 x 4: the 24-layer backward pass
+# does not fit at 64). Run with scripts/distill/run_d1.sh 660000 configs/train/D0_24l.yaml.
+model_config: configs/model/ja_24l_4k.yaml
+start_from_pretrained: false
+distill_cfg_coef: 2.0
+distill_teacher_config: configs/model/ja_24l_4k.yaml
+distill_teacher_weights: runs/B1_4k/weights_660000.safetensors   # scripts/merge_snapshot_weights.py
+
+data:
+  train_jsonl: data/mix/B1_train_v8.jsonl
+  valid_jsonl: data/emilia_ja/valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+
+# no CFG dropout: the teacher's targets are fully conditioned and the student never runs a
+# null branch (upstream note)
+text_dropout: 0.0
+voice_dropout: 0.0
+
+optim:
+  lr: 2e-4
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/D0_24l
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 50000
+stats_ema_steps: 0        # keep the teacher's latent normalization
+ema_decay: 0.999         # B1's value: 50k steps are too few for the 10k-step horizon of 0.9999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 1.0      # sampled without CFG
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
