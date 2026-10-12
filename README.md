@@ -48,9 +48,12 @@ whose target word is read correctly.
 |---|---:|---:|
 | 24-layer teacher, step 700k (CFG 2.0, not released as is) | 92.97% | 93.68% |
 | `japanese` (6 layers, CFG baked in) | **94.15%** | **94.73%** |
-| `japanese_24l` | TBD | TBD |
+| `japanese_24l` (24 layers, CFG baked in) | 93.31% | 94.06% |
 
-The goal of the project was 90%. For reference, with the jvs001 prompt
+The goal of the project was 90%. The 6-layer model reads at least as well as the 24-layer ones,
+so `japanese` is the one to use unless the rarer failure to stop (see Limitations) matters.
+
+For reference, with the jvs001 prompt
 [Irodori-TTS-v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) scores 94.0% and
 [Irodori-TTS-v4.1-Small-Yomi](https://huggingface.co/takuma104/Irodori-TTS-v4.1-Small-Yomi), which
 synthesized part of the training data, 95.7%
@@ -122,9 +125,9 @@ ReazonSpeech is not used. JVS and JSUT are used for evaluation only.
   appendix of the Joyo kanji table (jukujikun, 87% correct). Numbers, counters and Latin letters were not
   evaluated separately.
 - In 0.1 to 0.3% of the JKYB sentences `japanese` does not end the utterance and keeps generating
-  up to the length limit (the 24-layer teacher: 0.01 to 0.04%).
+  up to the length limit (`japanese_24l`: 0.02 to 0.09%).
 - Reading accuracy and speaker similarity depend on the voice prompt (the two JKYB columns differ
-  by 0.6 to 0.7 points).
+  by 0.6 to 0.8 points).
 - The codec (Mimi) is the original one. Real Japanese recordings lose clarity when they pass
   through it (Kana-CER of JVS recordings: 3.3% as recorded, 5.4% after Mimi).
 - Voice cloning must not be used to impersonate people without their consent. The prohibited uses
