@@ -12,6 +12,7 @@ resumable checkpoints have rotated out.
     uv run python scripts/train_ja.py configs/train/A5_8k.yaml
 """
 
+import multiprocessing
 import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -74,13 +75,17 @@ if __name__ == "__main__":
     # an ssh shell starts with 1024 file descriptors; the latent files alone are several hundred
     _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    code = 0
     try:
         main(sys.argv[1])
     except Exception:
         # the loader threads would keep a failed run alive (and its GPU memory) for ever
         traceback.print_exc()
         sys.stderr.flush()
-        os._exit(1)
+        code = 1
     # Loader subprocesses and wandb's service can keep the interpreter alive after training
-    # finished (holding GPU memory); everything is saved by now.
-    os._exit(0)
+    # finished (holding GPU memory); everything is saved by now. os._exit skips the cleanup
+    # of multiprocessing, so the loader subprocesses must be killed here or they stay behind.
+    for child in multiprocessing.active_children():
+        child.kill()
+    os._exit(code)
