@@ -8,6 +8,9 @@ Writes into --out:
                             files do, halving the download; the 24-layer ones are float32)
   tokenizer.model           the SentencePiece model (shared by the 6-layer and 24-layer models)
 
+--mimi-decoder replaces the decode side of Mimi with a fine-tuned one (plan M2); the encoder, and
+with it the latents and voice prompts, stay the base file's.
+
 With --repo the yaml points at hf://<repo>/... (add --revision once the weights are uploaded to
 pin them); without it, at the local files, to test with the wheel before the upload:
 
@@ -55,6 +58,9 @@ def main() -> None:
     parser.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32", help="of the FlowLM")
     parser.add_argument("--temp", type=float, default=None, help="default_temperature (config value if omitted)")
     parser.add_argument("--frames-after-eos", type=int, default=None, help="model_recommended_frames_after_eos")
+    parser.add_argument("--mimi-decoder", type=Path, default=None,
+                        help="fine-tuned decode side of Mimi (scripts/m2/train_mimi_decoder.py) stored in place "
+                             "of the base file's")
     args = parser.parse_args()
 
     cfg = yaml.safe_load(args.model_config.read_text())
@@ -63,6 +69,12 @@ def main() -> None:
     weights = weights_dir / "model.safetensors"
     state, _ = merged_state(args.model_config, args.snapshot)
     assert all(v.dtype == torch.float32 for k, v in state.items() if k.startswith("flow_lm."))
+    if args.mimi_decoder is not None:
+        decoder = safetensors.torch.load_file(str(args.mimi_decoder))
+        assert decoder and set(decoder) <= set(state), f"{args.mimi_decoder}: names not in the model"
+        for name, tensor in decoder.items():
+            assert tensor.shape == state[name].shape, name
+            state[name] = tensor.to(state[name].dtype)  # bfloat16, like the rest of Mimi in the file
     if args.dtype == "bfloat16":
         state = {k: v.to(torch.bfloat16) for k, v in state.items()}
     safetensors.torch.save_file(state, str(weights))

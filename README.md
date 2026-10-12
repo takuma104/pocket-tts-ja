@@ -9,7 +9,7 @@ from the English 24-layer teacher with the official training code.
   model reads the kanji itself.
 - **Zero-shot voice cloning** from a few seconds of reference audio, as in the original.
 - Two models: `japanese` (6 layers, 110M parameters with the codec, 219 MB) and `japanese_24l`
-  (24 layers, the teacher with classifier-free guidance baked in).
+  (24 layers, 336M parameters, 1.3 GB, the teacher with classifier-free guidance baked in).
 
 Weights: [takuma104/pocket-tts-ja](https://huggingface.co/takuma104/pocket-tts-ja) (CC BY-NC 4.0).
 The experiment plan and the full log of results are in Japanese:
@@ -60,12 +60,12 @@ synthesized part of the training data, 95.7%
 
 | Set | Metric | Teacher 700k | `japanese` | `japanese_24l` |
 |---|---|---:|---:|---:|
-| JKYB-mini (1,500 sentences) | accuracy | 93.3% | 93.8% | TBD |
-| Aozora Bunko ruby (1,000 sentences) | target reading accuracy | 69.4% | 70.0% | TBD |
-| JSUT (1,000 sentences) | Kana-CER | 2.66% | 2.39% | TBD |
-| JVS zero-shot (5 male + 5 female speakers, 10 sentences each) | Kana-CER | 3.05% | 2.58% | TBD |
-| JVS zero-shot | similarity to the speaker's recording of the same sentence (ECAPA) | 0.538 | 0.536 | TBD |
-| Short texts (172 texts of 2–8 tokens) | did not stop / extra speech | 1 / 2 | 0 / 1 | TBD |
+| JKYB-mini (1,500 sentences) | accuracy | 93.3% | 93.8% | 93.6% |
+| Aozora Bunko ruby (1,000 sentences) | target reading accuracy | 69.4% | 70.0% | 70.4% |
+| JSUT (1,000 sentences) | Kana-CER | 2.66% | 2.39% | 2.55% |
+| JVS zero-shot (5 male + 5 female speakers, 10 sentences each) | Kana-CER | 3.05% | 2.58% | 2.34% |
+| JVS zero-shot | similarity to the speaker's recording of the same sentence (ECAPA) | 0.538 | 0.536 | 0.538 |
+| Short texts (172 texts of 2–8 tokens) | did not stop / extra speech | 1 / 2 | 0 / 1 | 0 / 1 |
 
 **Stock wheel on CPU** (`pocket-tts==3.3.0`, the packaged `japanese` model, bfloat16 weights), next
 to the GPU evaluation of the same checkpoint:
