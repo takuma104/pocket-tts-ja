@@ -337,8 +337,12 @@ def main():
     parser.add_argument("--from-audio", action="store_true",
                         help="score the wavs already in <result dir>/audio, e.g. generated with the stock "
                         "wheel (scripts/release/wheel_generate.py), instead of generating them here")
+    parser.add_argument("--mimi-decoder", type=Path, default=None,
+                        help="decode with a fine-tuned Mimi decoder (scripts/m2/train_mimi_decoder.py); "
+                        "needs --tag-suffix")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
+    assert args.mimi_decoder is None or args.tag_suffix, "--mimi-decoder needs --tag-suffix"
 
     snap, step = snapshot_path(args.run_dir, args.snapshot)
     if args.dataset is not None:
@@ -386,6 +390,10 @@ def main():
     else:
         device = torch.device("cuda")
         model, mimi = load_model(args.run_dir, snap, device)
+        if args.mimi_decoder is not None:
+            from pocket_tts_ja.codec_ft import load_decoder
+
+            load_decoder(mimi, args.mimi_decoder)
         counts = generate(model, mimi, items, audio_dir, args)
         del model
         torch.cuda.empty_cache()
