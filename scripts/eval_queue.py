@@ -74,7 +74,8 @@ def evaluate(run: Path, step: int, host: str, sets: list[str], jvs_speakers: int
             print(f"{run.name} step {step} {s}: FAILED (see {log})", flush=True)
             return False
     sh(["rsync", "-a", "--include=*/", "--include=metrics.json", "--include=summary.json",
-        "--include=summary.md", "--include=cer.json", "--include=generation.jsonl", "--exclude=*",
+        "--include=summary.md", "--include=cer.json", "--include=generation.jsonl", "--include=kana.jsonl",
+        "--exclude=*",
         f"{host}:{rrun}/eval/", str(run / "eval") + "/"], check=False)
     if not keep:
         sh(["ssh", host, f"rm -f {rrun}/snapshots/step_{step:08d}.safetensors"], check=False)
