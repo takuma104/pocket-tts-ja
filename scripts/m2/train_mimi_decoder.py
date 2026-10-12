@@ -16,9 +16,12 @@ One id in 200 (by hash) is held out for validation. --valid-glob adds validation
 
 SIGTERM to the pid in run_dir/pid writes a checkpoint and exits.
 
-Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
-(EMA weights under their `mimi.*` names, for pocket_tts_ja.codec_ft.load_decoder) and
-run_dir/progress.jsonl. wandb gets scalars only.
+Writes run_dir/checkpoint.pt (at every validation; resumed automatically),
+run_dir/decoder_step_<step>.safetensors (EMA weights under their `mimi.*` names, for
+pocket_tts_ja.codec_ft.load_decoder) and run_dir/progress.jsonl. wandb gets scalars only.
+
+GPU memory: batch 16 with the discriminators peaks at about 5 GB while only they train and
+more once the decoder trains too (gpu_gb in the log is the peak of each interval).
 """
 
 import argparse
@@ -280,6 +283,9 @@ def main() -> None:
         batch_sampler=BucketBatches(durations, sources, args.batch_size, args.seed + step),
         collate_fn=Collate(frame, args.frames, args.prefix_prob, tuple(args.gain_db)),
         num_workers=args.workers,
+        # forkserver (the default from Python 3.14) leaves the workers running after this process:
+        # they watch the fork server, and it stays up for as long as they hold its pipe
+        multiprocessing_context="fork",
         prefetch_factor=4,
         persistent_workers=True,
     )
@@ -363,6 +369,7 @@ def main() -> None:
             stats["loss_d"] = float(loss_d.detach())
             stats["d_real"] = float(torch.stack([r.detach().mean() for r, _ in d_real]).mean())
             stats["d_fake"] = float(torch.stack([f.detach().mean() for f, _ in d_fake]).mean())
+            del d_real, d_fake, loss_d  # their feature maps would stay allocated through the decoder step
         if train_g:
             mel = mel_loss(fake, real)
             loss_g = args.w_mel * mel
@@ -392,6 +399,8 @@ def main() -> None:
             mean = {key: value / count for key, value in sums.items()}
             mean["lr"] = opt_g.param_groups[0]["lr"]
             mean["it_per_s"] = count / (time.time() - began)
+            mean["gpu_gb"] = torch.cuda.max_memory_allocated() / 2**30
+            torch.cuda.reset_peak_memory_stats()
             log("train", step, mean)
             print(f"step {step} | " + " ".join(f"{k} {v:.4g}" for k, v in mean.items()), flush=True)
             sums.clear()
@@ -404,6 +413,8 @@ def main() -> None:
             print(f"valid @ {step}: " + " ".join(f"{k} {v:.4f}" for k, v in values.items()), flush=True)
         if step % args.save_every == 0 or step == args.max_steps:
             save(step, export=True)
+        elif step % args.valid_every == 0:
+            save(step, export=False)  # a restart resumes from here
     if stop:
         save(step, export=False)
         print(f"stopped at step {step} (checkpoint written)", flush=True)
