@@ -9,7 +9,8 @@ of the clip, where the first consonant has nothing in front of it.
         --data irodori=data/synth/s3_full/manifest.jsonl:data/synth/s3_full/audio \
         --valid-glob "jvs=data/jvs_ver1/jvs00*/parallel100/wav24kHz16bit/*.wav"
 
---data NAME=MANIFEST:AUDIO_DIR: rows with "id" and "duration"; the audio is AUDIO_DIR/<id>.wav.
+--data NAME=MANIFEST:AUDIO_DIR[:WEIGHT]: rows with "id" and "duration"; the audio is
+AUDIO_DIR/<id>.wav. A batch comes from one source, picked with probability WEIGHT (default 1).
 One id in 200 (by hash) is held out for validation. --valid-glob adds validation-only audio
 (JVS is never trained on). --w-adv 0 --w-fm 0 trains on the mel loss alone (no discriminators).
 
@@ -85,18 +86,23 @@ class ClipDataset(Dataset[torch.Tensor]):
 class BucketBatches:
     """Endless batches of clips of similar length, so a window can start late in all of them."""
 
-    def __init__(self, durations: list[float], batch_size: int, seed: int) -> None:
-        buckets: dict[int, list[int]] = defaultdict(list)
-        for index, duration in enumerate(durations):
-            buckets[int(duration)].append(index)
-        self.buckets = [b for b in buckets.values() if len(b) >= batch_size]
-        self.weights = [len(b) for b in self.buckets]
+    def __init__(
+        self, durations: list[float], sources: list[tuple[range, float]], batch_size: int, seed: int
+    ) -> None:
+        self.sources: list[list[list[int]]] = []
+        self.source_weights = [weight for _, weight in sources]
+        for indices, _ in sources:
+            buckets: dict[int, list[int]] = defaultdict(list)
+            for index in indices:
+                buckets[int(durations[index])].append(index)
+            self.sources.append([b for b in buckets.values() if len(b) >= batch_size])
         self.batch_size = batch_size
         self.rng = random.Random(seed)
 
     def __iter__(self) -> Iterator[list[int]]:
         while True:
-            bucket = self.rng.choices(self.buckets, weights=self.weights)[0]
+            buckets = self.rng.choices(self.sources, weights=self.source_weights)[0]
+            bucket = self.rng.choices(buckets, weights=[len(b) for b in buckets])[0]
             yield self.rng.sample(bucket, self.batch_size)
 
 
@@ -121,15 +127,19 @@ class Collate:
         return torch.stack(out)[:, None], start
 
 
-def load_rows(specs: list[str], min_seconds: float, max_seconds: float) -> tuple[list[str], list[float], list[str]]:
-    """Training paths with durations, and the held-out paths."""
+def load_rows(
+    specs: list[str], min_seconds: float, max_seconds: float
+) -> tuple[list[str], list[float], list[tuple[range, float]], list[str]]:
+    """Training paths with durations, the index range and weight of each source, the held-out paths."""
     paths: list[str] = []
     durations: list[float] = []
+    sources: list[tuple[range, float]] = []
     held_out: list[str] = []
     for spec in specs:
         name, rest = spec.split("=", 1)
-        manifest, audio_dir = rest.split(":", 1)
+        manifest, audio_dir, *weight = rest.split(":")
         kept = 0
+        first = len(paths)
         for line in open(manifest):
             row = json.loads(line)
             if not (min_seconds <= row["duration"] <= max_seconds):
@@ -141,8 +151,9 @@ def load_rows(specs: list[str], min_seconds: float, max_seconds: float) -> tuple
                 paths.append(path)
                 durations.append(float(row["duration"]))
                 kept += 1
-        print(f"data {name}: {kept} training clips", flush=True)
-    return paths, durations, held_out
+        sources.append((range(first, len(paths)), float(weight[0]) if weight else 1.0))
+        print(f"data {name}: {kept} training clips, {sum(durations[first:]) / 3600:.1f} h, weight {sources[-1][1]}", flush=True)
+    return paths, durations, sources, held_out
 
 
 def spread(items: list[str], count: int) -> list[str]:
@@ -185,7 +196,7 @@ def validate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--data", action="append", required=True, help="NAME=MANIFEST:AUDIO_DIR")
+    parser.add_argument("--data", action="append", required=True, help="NAME=MANIFEST:AUDIO_DIR[:WEIGHT]")
     parser.add_argument("--valid-glob", action="append", default=[], help="NAME=GLOB of validation-only wavs")
     parser.add_argument("--frames", type=int, default=32, help="frames of the trained window (80 ms each)")
     parser.add_argument("--max-seconds", type=float, default=12.0)
@@ -254,7 +265,7 @@ def main() -> None:
         print(f"resumed from step {step}", flush=True)
 
     min_seconds = (args.frames + 2) * frame / sample_rate
-    paths, durations, held_out = load_rows(args.data, min_seconds, args.max_seconds)
+    paths, durations, sources, held_out = load_rows(args.data, min_seconds, args.max_seconds)
     max_frames = int(args.max_seconds * sample_rate) // frame
     valid_paths = {"heldout": spread(held_out, VALID_CLIPS)}
     for spec in args.valid_glob:
@@ -266,7 +277,7 @@ def main() -> None:
     print("validation clips: " + ", ".join(f"{k} {len(v)}" for k, v in valid_sets.items()), flush=True)
     loader = DataLoader(
         ClipDataset(paths, sample_rate, frame, max_frames),
-        batch_sampler=BucketBatches(durations, args.batch_size, args.seed + step),
+        batch_sampler=BucketBatches(durations, sources, args.batch_size, args.seed + step),
         collate_fn=Collate(frame, args.frames, args.prefix_prob, tuple(args.gain_db)),
         num_workers=args.workers,
         prefetch_factor=4,
