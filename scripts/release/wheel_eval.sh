@@ -6,6 +6,8 @@
 #   scripts/package_release.py configs/model/ja_6l_4k.yaml runs/D1_6l_b/snapshots/step_00120000.safetensors \
 #       --name japanese --out exp/release_test/d1b_120k --dtype bfloat16
 #   scripts/release/wheel_eval.sh runs/D1_6l_b 120000 exp/release_test/d1b_120k/japanese.yaml wheel jkyb_mini jvs_bal short jsut
+# REMOTE_PREFIX wraps the scoring command on the eval host (e.g. "flock runs/extra_gpu.lock", so
+# that only one of several extra jobs is on its GPU at a time).
 cd "$(dirname "$0")/../.." || exit 1
 RUN=$1; STEP=$2; CONFIG=$3; SUFFIX=$4; shift 4
 WHEEL=${WHEEL:-pocket-tts==3.3.0}
@@ -19,7 +21,7 @@ for s in "$@"; do
   rsync -a -e "$SSH" --exclude items.json "$E/$tag/" "$H:$R/$E/$tag/" || exit 1
   ok=0
   for try in 1 2 3 4 5 6; do  # the eval host's GPU is shared: retry when the ASR runs out of memory
-    $SSH $H "cd $R && ~/.local/bin/uv run python scripts/eval_tts.py $RUN --snapshot $STEP --set $s --cfg 1.0 \
+    $SSH $H "cd $R && ${REMOTE_PREFIX:-} ~/.local/bin/uv run python scripts/eval_tts.py $RUN --snapshot $STEP --set $s --cfg 1.0 \
       --tag-suffix $SUFFIX --from-audio --no-wandb" && { ok=1; break; }
     sleep 300
   done
