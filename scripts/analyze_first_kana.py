@@ -5,6 +5,7 @@ kana-whisper gets the first kana of generated speech wrong far more often than t
 consonant apart, so it shows how clear the consonants are on their own. Per result:
 
   exact        clips whose reading is exactly the reference
+  Kana-CER     edits over reference kana, all clips together
   1st only     clips whose only error is the first kana, as a share of the clips whose other
                kana are all right (exact + these)
   1st / 2nd / 3rd-5th / later
@@ -59,14 +60,14 @@ def main() -> None:
             refs[row["key"]] = canonical_kana(reading)
             texts[row["key"]] = row.get("text", "")
 
-    print("| result | clips | exact | 1st only | " + " | ".join(POSITIONS) + " |")
-    print("|---|---:|---:|---:|" + "---:|" * len(POSITIONS))
+    print("| result | clips | exact | Kana-CER | 1st only | " + " | ".join(POSITIONS) + " |")
+    print("|---|---:|---:|---:|---:|" + "---:|" * len(POSITIONS))
     examples: list[str] = []
     for spec in args.results:
         name, path = spec.split("=", 1)
         kana_file = Path(path) if path.endswith(".jsonl") else Path(path) / "asr_audio" / "kana.jsonl"
         asr = {json.loads(line)["key"]: json.loads(line)["yomi"] for line in open(kana_file)}
-        clips = exact = only = shown = 0
+        clips = exact = only = shown = edits = kana = 0
         wrong = dict.fromkeys(POSITIONS, 0)
         total = dict.fromkeys(POSITIONS, 0)
         for key, ref in refs.items():
@@ -75,6 +76,8 @@ def main() -> None:
             ops = Levenshtein.editops(ref, canonical_kana(asr[key]))
             clips += 1
             exact += not ops
+            edits += len(ops)
+            kana += len(ref)
             # an insertion in front of the first kana counts only when it starts the prediction
             first_only = len(ops) == 1 and ops[0].src_pos == 0 and not (ops[0].tag == "insert" and ops[0].dest_pos > 0)
             only += first_only
@@ -87,10 +90,11 @@ def main() -> None:
                     total[position(index)] += 1
                     wrong[position(index)] += index in bad
         if not clips:
-            print(f"| {name} | 0 |" + " |" * (2 + len(POSITIONS)))
+            print(f"| {name} | 0 |" + " |" * (3 + len(POSITIONS)))
             continue
         rates = " | ".join(f"{100 * wrong[p] / max(total[p], 1):.1f}%" for p in POSITIONS)
-        print(f"| {name} | {clips} | {100 * exact / clips:.1f}% | {100 * only / max(exact + only, 1):.1f}% | {rates} |")
+        print(f"| {name} | {clips} | {100 * exact / clips:.1f}% | {100 * edits / kana:.2f}% | "
+              f"{100 * only / max(exact + only, 1):.1f}% | {rates} |")
     if examples:
         print()
         print("\n".join(examples))
