@@ -97,7 +97,11 @@ def qc(max_sentence_cer: float, S3: Path, texts_path: Path, tagged_names: list[s
     print(json.dumps(stats, indent=2))
 
 
-def encode(part_size: int, S3: Path, texts_path: Path, input_path: Path):
+def encode(part_size: int, S3: Path, texts_path: Path, input_path: Path, min_frames: int = 0):
+    """`min_frames` (S9): clips shorter than this are continued with silence up to it, and the
+    speech end is put no earlier than 3 frames before it, so that the training target (speech
+    end + 3 frames) never ends before `min_frames`. The stock inference ignores an EOS in its
+    first 6 frames: a clip of 0.3 s would teach an EOS it cannot act on."""
     import numpy as np
     import soundfile as sf
     import torch
@@ -134,7 +138,7 @@ def encode(part_size: int, S3: Path, texts_path: Path, input_path: Path):
             batches.append(cur)
         for chunk in batches:
             wavs = [sf.read(str(S3 / "audio" / f"{i}.wav"), dtype="float32")[0] for i in chunk]
-            T = max(len(w) for w in wavs)
+            T = max(max(len(w) for w in wavs), min_frames * FRAME)
             T += (-T) % FRAME
             x = torch.zeros(len(wavs), 1, T)
             for k, w in enumerate(wavs):
@@ -142,16 +146,16 @@ def encode(part_size: int, S3: Path, texts_path: Path, input_path: Path):
             with torch.no_grad():
                 z = mimi.encode_to_latent(x.to(device))
             for k, (i, w) in enumerate(zip(chunk, wavs, strict=True)):
-                lat = z[k, : int(np.ceil(len(w) / FRAME))].half().cpu().numpy()
+                lat = z[k, : max(int(np.ceil(len(w) / FRAME)), min_frames)].half().cpu().numpy()
                 lats.append(lat)
                 inp = inputs[i]
                 rows.append({
                     "id": i, "transcript": normalize(texts[i]["text"]),
                     "speaker": f"syn:{inp['ref_speaker']}", "ref_id": inp["ref_id"],
-                    "source_type": "irodori", "duration": round(len(w) / 24000, 3),
+                    "source_type": "irodori", "duration": round(max(len(w), min_frames * FRAME) / 24000, 3),
                     "lat_file": f"latents/part_{p // part_size:03d}.npy",  # relative to the manifest
                     "lat_start": n, "lat_len": int(lat.shape[0]),
-                    "speech_end": min(speech_end_frames(w), int(lat.shape[0])),
+                    "speech_end": min(max(speech_end_frames(w), min_frames - 3), int(lat.shape[0])),
                 })
                 n += int(lat.shape[0])
             del z, x
@@ -168,6 +172,8 @@ def main():
     parser.add_argument("--encode", action="store_true")
     parser.add_argument("--max-sentence-cer", type=float, default=0.08)
     parser.add_argument("--part-size", type=int, default=20000)
+    parser.add_argument("--min-frames", type=int, default=0,
+                        help="--encode: continue shorter clips with silence up to this many frames (S9: 7)")
     parser.add_argument("--dir", type=Path, default=S3, help="synthetic set directory (audio/, asr_audio/)")
     parser.add_argument("--texts", type=Path, default=ROOT / "texts.jsonl")
     parser.add_argument("--input", type=Path, default=ROOT / "s3_input.jsonl")
@@ -177,7 +183,7 @@ def main():
     if args.qc:
         qc(args.max_sentence_cer, args.dir, args.texts, [n for n in args.tagged.split(",") if n])
     if args.encode:
-        encode(args.part_size, args.dir, args.texts, args.input)
+        encode(args.part_size, args.dir, args.texts, args.input, args.min_frames)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,9 @@ TRAIL_FRAMES = 3  # keep ~0.24 s after the detected speech end, so EOS has a con
 PROMPT_MODES = (("prefix", 0.50), ("full", 0.35), ("concat", 0.15))
 PREFIX_SEC = (3.0, 10.0)
 MIN_PROMPT_FRAMES = 13  # ~1 s
+# Utterances under 2 s are targets only: the very short synthetic clips (S9) share their speaker
+# labels with the long ones and would otherwise become a fifth of those speakers' voice prompts.
+MIN_PROMPT_SOURCE_FRAMES = 25
 
 # One memory map per latent file for the whole process: the trainer builds a new validation
 # loader at every validation and never drops the old one (its prefetch thread stays blocked),
@@ -84,6 +87,8 @@ class _Corpus:
         for i, s in enumerate(self.speaker.tolist()):
             by_spk[s].append(i)
         self.by_speaker = {s: np.asarray(v, dtype=np.int64) for s, v in by_spk.items()}
+        usable = np.minimum(self.length, self.speech_end + TRAIL_FRAMES) >= MIN_PROMPT_SOURCE_FRAMES
+        self.prompt_pool = {s: v[usable[v]] for s, v in self.by_speaker.items()}
 
     def __len__(self) -> int:
         return len(self.texts)
@@ -99,8 +104,15 @@ class _Corpus:
         return _MMAPS[path][s : s + max(1, n)]
 
     def others(self, i: int) -> npt.NDArray[np.int64]:
-        cands = self.by_speaker[int(self.speaker[i])]
-        return cands[(cands != i)]
+        """Rows that can prompt row i: the speaker's other utterances of 2 s or more (any other
+        one if there is none)."""
+        spk = int(self.speaker[i])
+        cands = self.prompt_pool[spk]
+        cands = cands[cands != i]
+        if len(cands) == 0:
+            cands = self.by_speaker[spk]
+            cands = cands[cands != i]
+        return cands
 
 
 class JaLatentDataLoader(DataLoader):

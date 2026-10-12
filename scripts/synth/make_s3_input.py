@@ -50,6 +50,8 @@ def main() -> None:
                 "ref_id": ref["id"],
                 "seed": h(t["id"], "seed") % (2**31),
             }
+            if "seconds" in t:  # S9: the clip length comes with the text
+                row["seconds"] = t["seconds"]
             dst.write(json.dumps(row, ensure_ascii=False) + "\n")
             n += 1
     print(f"wrote {n} rows over {len(refs)} reference speakers to {args.output}")

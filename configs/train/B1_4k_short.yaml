@@ -1,0 +1,53 @@
+# B1 teacher, short-text stage: resumes runs/B1_4k at 660k (raw weights, optimizer state and EMA
+# of the checkpoint) on mix v9 = mix v8 + S9 (very short utterances, 1% of hours). At 660k the
+# teacher goes on talking after a third of the texts of 2-8 tokens (--set short), which the
+# stock inference produces from the last clause of a sentence over 50 tokens and from short
+# last sentences. Same LR shape as the decay 600k -> 660k, shifted: lr 4e-4 with warmup 620k and
+# max 700k puts the resume point at the middle of the cosine (2e-4 at 660k, 1.2e-4 at 670k,
+# 5.9e-5 at 680k, 1.5e-5 at 690k, 0 at 700k; no warm-up happens: step > 620k).
+model_config: configs/model/ja_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/B1_train_v9.jsonl
+  valid_jsonl: data/emilia_ja/valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed by scripts/precompute_emilia_ja.py
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 4e-4
+  schedule: cosine
+  warmup_steps: 620000
+
+run_dir: runs/B1_4k
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 700000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
