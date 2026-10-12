@@ -5,6 +5,9 @@ Input is a jsonl with one row per utterance; each row needs at least::
 
     {"id": str, "text": str, "ref_wav": str | null, "seed": int}
 
+and may give ``"seconds"``: the clip length to generate, instead of the duration predictor's
+(for very short text, which the predictor stretches to 2-3 s).
+
 ``ref_wav`` is a speaker reference (any format/rate torchaudio or soundfile can
 read; relative paths are resolved against ``--ref-root``). ``null`` synthesizes
 without a speaker reference (Irodori's ``--no-ref``: the reference is empty and
@@ -136,6 +139,7 @@ class SynthItem:
     text: str
     seed: int
     ref_wav: str | None
+    seconds: float | None = None  # clip length to use instead of the duration predictor's
 
 
 @dataclass(frozen=True)
@@ -340,7 +344,13 @@ class MultiRefSynthesizer:
         frames = torch.expm1(pred_log_frames).float().reshape(batch).tolist()
         min_frames, max_frames = self._frame_bounds()
         scale = self.settings.duration_scale
-        return [max(min_frames, min(max_frames, round(f * scale))) for f in frames]
+        # The predictor never saw clips under 3 s: it gives very short text 2-3 s, and the
+        # sampler fills the spare time with babble. Rows may bring their own length.
+        frames = [
+            f * scale if item.seconds is None else item.seconds * self.sample_rate / self.hop_length
+            for f, item in zip(frames, items, strict=True)
+        ]
+        return [max(min_frames, min(max_frames, round(f))) for f in frames]
 
     # ---- sampling
 
@@ -616,9 +626,14 @@ def load_items(path: Path, ref_root: Path) -> list[SynthItem]:
             if ref is not None:
                 ref_path = Path(str(ref)).expanduser()
                 ref = str(ref_path if ref_path.is_absolute() else ref_root / ref_path)
+            seconds = row.get("seconds")
             items.append(
                 SynthItem(
-                    key=key, text=str(row["text"]), seed=int(row["seed"]), ref_wav=ref
+                    key=key,
+                    text=str(row["text"]),
+                    seed=int(row["seed"]),
+                    ref_wav=ref,
+                    seconds=None if seconds is None else float(seconds),
                 )
             )
     return items
@@ -664,6 +679,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cfg-min-t", type=float, default=0.5)
     parser.add_argument("--cfg-max-t", type=float, default=1.0)
     parser.add_argument("--max-seconds", type=float, default=30.0)
+    parser.add_argument("--min-seconds", type=float, default=0.5)
     parser.add_argument(
         "--no-watermark", action="store_true", help="skip the silentcipher watermark"
     )
@@ -706,6 +722,7 @@ def main() -> int:
         cfg_min_t=args.cfg_min_t,
         cfg_max_t=args.cfg_max_t,
         max_seconds=args.max_seconds,
+        min_seconds=args.min_seconds,
         trim_tail=not args.no_trim_tail,
         watermark=not args.no_watermark,
     )

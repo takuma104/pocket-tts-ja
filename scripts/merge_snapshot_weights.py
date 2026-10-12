@@ -12,8 +12,22 @@ import argparse
 from pathlib import Path
 
 import safetensors.torch
+import torch
 import yaml
 from pocket_tts.utils.utils import download_if_necessary
+
+
+def merged_state(model_config: Path, snapshot: Path) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """The config's base weights with flow_lm.* taken from the snapshot, and the base flow_lm
+    keys the snapshot lacks (layers above the depth of a shallower model)."""
+    cfg = yaml.safe_load(model_config.read_text())
+    base = safetensors.torch.load_file(str(download_if_necessary(cfg["weights_path"])))
+    snap = safetensors.torch.load_file(str(snapshot))
+    assert all(k.startswith("flow_lm.") for k in snap), "snapshot should hold flow_lm.* only"
+    merged = {k: v for k, v in base.items() if not k.startswith("flow_lm.")}
+    merged.update({k: v.contiguous() for k, v in snap.items()})
+    dropped = sorted(set(k for k in base if k.startswith("flow_lm.")) - set(snap))
+    return merged, dropped
 
 
 def main() -> None:
@@ -23,15 +37,10 @@ def main() -> None:
     parser.add_argument("out", type=Path)
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(args.model_config.read_text())
-    base = safetensors.torch.load_file(str(download_if_necessary(cfg["weights_path"])))
-    snap = safetensors.torch.load_file(str(args.snapshot))
-    assert all(k.startswith("flow_lm.") for k in snap), "snapshot should hold flow_lm.* only"
-    merged = {k: v for k, v in base.items() if not k.startswith("flow_lm.")}
-    merged.update({k: v.contiguous() for k, v in snap.items()})
-    dropped = sorted(set(k for k in base if k.startswith("flow_lm.")) - set(snap))
+    merged, dropped = merged_state(args.model_config, args.snapshot)
+    n_snap = sum(k.startswith("flow_lm.") for k in merged)
     safetensors.torch.save_file(merged, str(args.out))
-    print(f"{len(merged)} tensors -> {args.out} ({len(snap)} from the snapshot; base flow_lm keys not in it: {dropped[:5]})")
+    print(f"{len(merged)} tensors -> {args.out} ({n_snap} from the snapshot; base flow_lm keys not in it: {dropped[:5]})")
 
 
 if __name__ == "__main__":

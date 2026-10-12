@@ -8,6 +8,8 @@ Sets:
              sentences, prompted by the speaker's first nonpara30 utterance; Kana-CER
              against the phoneme-label reading, Text CER, ECAPA similarity to the speaker's
              real recording of the same sentence, EOS failures
+  jsut       1,000 JSUT BASIC5000 sentences with verified kana, Kana-CER
+  short      172 texts of 2-8 tokens (last clauses of JSUT sentences, everyday phrases), Kana-CER
 
 Generation follows the stock inference defaults: temp 0.3, 1 LSD step, eos threshold -4,
 5 frames after EOS, and the per-row length budget tokens / 3 + 2 s (a row that reaches it
@@ -85,6 +87,13 @@ def first_nonpara(spk: str) -> Path:
     return sorted((JVS / spk / "nonpara30" / "wav24kHz16bit").glob("*.wav"))[0]
 
 
+# rows of key, text, kana: scored by Kana-CER like the JVS sets, with the rotating JKYB voices
+KANA_SETS = {
+    # JSUT BASIC5000 sentences with verified kana (jsut-label): general reading
+    "jsut": REPO / "data" / "eval" / "jsut_eval_1k.jsonl",
+    # texts of 2-8 tokens (scripts/make_short_eval.py): what the stock chunker generates alone
+    "short": REPO / "data" / "eval" / "short_ja.jsonl",
+}
 JKYB_SCHEMA_SETS = {
     "jkyb_mini": REPO / "data" / "eval" / "jkyb_mini.jsonl",
     # held-out Aozora works with ruby-verified readings (Irodori experiments, JKYB schema);
@@ -94,10 +103,9 @@ JKYB_SCHEMA_SETS = {
 
 
 def build_items(which: str, voice: str, jvs_speakers: int, dataset: Path | None = None) -> list[dict[str, Any]]:
-    if which == "jsut":
-        # JSUT BASIC5000 sentences with verified kana (jsut-label): general reading, Kana-CER
+    if which in KANA_SETS:
         items = []
-        for line in open(REPO / "data" / "eval" / "jsut_eval_1k.jsonl"):
+        for line in open(KANA_SETS[which]):
             r = json.loads(line)
             h = int(hashlib.md5(r["key"].encode()).hexdigest(), 16)
             prompt = JVS001 if voice == "jvs001" else first_nonpara(ROTATION[h % len(ROTATION)])
@@ -307,7 +315,7 @@ def speaker_similarity(items: list[dict[str, Any]], audio_dir: Path) -> float:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "aozora", "jvs", "jvs_bal", "jsut"), default="jkyb_mini")
+    parser.add_argument("--set", choices=("jkyb_mini", "jkyb", "aozora", "jvs", "jvs_bal", "jsut", "short"), default="jkyb_mini")
     parser.add_argument("--snapshot", default="latest")
     parser.add_argument("--voice", choices=("rotation", "jvs001"), default="rotation")
     parser.add_argument("--cfg", type=float, default=2.0)
@@ -323,6 +331,12 @@ def main():
                         help="JKYB-schema jsonl to evaluate instead of a named set (e.g. the kana oracle); "
                         "its stem names the result directory")
     parser.add_argument("--limit", type=int, default=0, help="first N items only (smoke tests)")
+    parser.add_argument("--tag-suffix", default="", help="appended to the result directory name")
+    parser.add_argument("--export-items", action="store_true",
+                        help="write the items (key, text, prompt) to <result dir>/items.json and stop")
+    parser.add_argument("--from-audio", action="store_true",
+                        help="score the wavs already in <result dir>/audio, e.g. generated with the stock "
+                        "wheel (scripts/release/wheel_generate.py), instead of generating them here")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
@@ -337,6 +351,8 @@ def main():
         tag += "_eop"
     if args.limit:
         tag += f"_limit{args.limit}"
+    if args.tag_suffix:
+        tag += f"_{args.tag_suffix}"
     out_dir = args.run_dir / "eval" / f"step{step:08d}" / tag
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -352,11 +368,27 @@ def main():
                         dst.write(line)
             dataset = subset
 
-    device = torch.device("cuda")
-    model, mimi = load_model(args.run_dir, snap, device)
-    counts = generate(model, mimi, items, audio_dir, args)
-    del model
-    torch.cuda.empty_cache()
+    if args.export_items:
+        (out_dir / "items.json").write_text(json.dumps(items, ensure_ascii=False))
+        print(out_dir)
+        return
+    if args.from_audio:
+        missing = [it["key"] for it in items if not (audio_dir / f"{it['key']}.wav").exists()]
+        assert not missing, f"{len(missing)} wavs missing in {audio_dir}, e.g. {missing[:3]}"
+        rows = {}
+        for line in open(out_dir / "generation.jsonl", encoding="utf-8"):
+            row = json.loads(line)
+            rows[row["key"]] = row
+        counts = {
+            "no_eos": sum(bool(rows[it["key"]]["no_eos"]) for it in items),
+            "silent": sum(rows[it["key"]]["frames"] < MIN_FRAMES for it in items),
+        }
+    else:
+        device = torch.device("cuda")
+        model, mimi = load_model(args.run_dir, snap, device)
+        counts = generate(model, mimi, items, audio_dir, args)
+        del model
+        torch.cuda.empty_cache()
 
     metrics: dict[str, float] = {f"{k}_count": float(v) for k, v in counts.items()}
     if args.set in ("jkyb_mini", "jkyb", "aozora"):
