@@ -249,7 +249,7 @@ def main() -> None:
         param.requires_grad_(True)
     ema = {name: param.detach().clone() for name, param in decoder_named_parameters(mimi)}
     mel_loss = MultiScaleMelLoss(sample_rate).to(device)
-    spec_loss = SharedSpectrumLoss().to(device)
+    spec_loss = SharedSpectrumLoss(sample_rate).to(device)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0) if disc else None

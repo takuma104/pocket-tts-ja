@@ -103,20 +103,27 @@ class SharedSpectrumLoss(nn.Module):
     (200 Hz, 1.2 kHz) into fricatives: a metallic noise for a listener, invisible to a mel band,
     which is hundreds of Hz wide up there. Such a line sits in the same bin for every clip, so
     it survives the mean over the batch of the log ratio of the time-averaged power spectra,
-    where the differences of the single clips cancel.
+    where the differences of the single clips cancel. Squared, so that narrow lines dominate.
+
+    Only the band from `f_lo` to `f_hi` counts: below and above it the recordings have next to
+    no energy, the log ratio there is large and arbitrary, and its gradient swamps the rest
+    (unrestricted, the loss removed the lines but cost half of the mel loss's gain in Kana-CER).
     """
 
-    def __init__(self, n_fft: int = 2048) -> None:
+    def __init__(self, sample_rate: int, n_fft: int = 2048, f_lo: float = 300.0, f_hi: float = 11000.0) -> None:
         super().__init__()
         self.n_fft = n_fft
+        self.lo = round(f_lo * n_fft / sample_rate)
+        self.hi = round(f_hi * n_fft / sample_rate)
         self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
 
     def spectrum(self, wav: torch.Tensor) -> torch.Tensor:
         spec = torch.stft(wav[:, 0], self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
-        return spec.abs().pow(2).mean(dim=-1).clamp_min(1e-9).log10()
+        power = spec.abs().pow(2).mean(dim=-1)[:, self.lo : self.hi]
+        return (power + 1e-4 * power.mean(dim=-1, keepdim=True) + 1e-12).log10()
 
     def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
-        return (self.spectrum(fake) - self.spectrum(real)).mean(dim=0).pow(2).mean()  # squared: narrow lines dominate
+        return (self.spectrum(fake) - self.spectrum(real)).mean(dim=0).pow(2).mean()
 
 
 class PeriodDiscriminator(nn.Module):
