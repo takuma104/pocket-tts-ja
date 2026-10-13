@@ -47,8 +47,10 @@ from torch.utils.data import DataLoader, Dataset
 from pocket_tts_ja.codec_ft import (
     Discriminators,
     FineSpectrumLoss,
+    HighBandWaveLoss,
     MultiScaleMelLoss,
     SharedSpectrumLoss,
+    VoicingBlendMelLoss,
     decode_window,
     decoder_named_parameters,
     decoder_state,
@@ -225,9 +227,11 @@ def main() -> None:
     parser.add_argument("--high-cross", type=float, default=0.0,
                         help="Hz; above it the mel loss against the recording is replaced by --high-mode "
                              "(0: the mel loss covers the whole band)")
-    parser.add_argument("--high-mode", choices=("stock", "fine"), default="stock",
-                        help="stock: mel loss against the stock decoder's output of the same latents (its high band "
-                             "is kept); fine: codec_ft.FineSpectrumLoss against the recording")
+    parser.add_argument("--high-mode", choices=("stock", "wave", "fine", "voicing"), default="stock",
+                        help="stock: mel loss against the stock decoder's output of the same latents (the level of "
+                             "its high band is kept); wave: its high-passed waveform is kept (HighBandWaveLoss); "
+                             "fine: codec_ft.FineSpectrumLoss against the recording; voicing: the recording in "
+                             "unvoiced frames, the stock decoder in voiced ones (VoicingBlendMelLoss)")
     parser.add_argument("--w-high", type=float, default=15.0)
     parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
     parser.add_argument("--gan-lowpass", type=float, default=0.0,
@@ -259,7 +263,7 @@ def main() -> None:
 
     mimi = load_mimi(load_pocket_config(), device)
     sample_rate, frame = mimi.sample_rate, mimi.frame_size
-    stock = load_mimi(load_pocket_config(), device) if args.high_cross > 0 and args.high_mode == "stock" else None
+    stock = load_mimi(load_pocket_config(), device) if args.high_cross > 0 and args.high_mode != "fine" else None
     if args.init is not None:
         load_decoder(mimi, args.init)
     params = [param for _, param in decoder_named_parameters(mimi)]
@@ -275,8 +279,15 @@ def main() -> None:
         low_mels = tuple(max(2, round(n * share)) for n in full)
         high_mels = tuple(max(2, n - m) for n, m in zip(full, low_mels))
         train_mel = MultiScaleMelLoss(sample_rate, n_mels=low_mels, f_max=args.high_cross).to(device)
-        high_loss = (MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross) if args.high_mode == "stock"
-                     else FineSpectrumLoss(args.high_cross, sample_rate)).to(device)
+        if args.high_mode == "stock":
+            high_loss = MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross)
+        elif args.high_mode == "wave":
+            high_loss = HighBandWaveLoss(sample_rate, args.high_cross)
+        elif args.high_mode == "voicing":
+            high_loss = VoicingBlendMelLoss(sample_rate, args.high_cross, n_mels=high_mels)
+        else:
+            high_loss = FineSpectrumLoss(args.high_cross, sample_rate)
+        high_loss = high_loss.to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
@@ -418,11 +429,12 @@ def main() -> None:
             loss_g = args.w_mel * mel
             stats["mel"] = float(mel.detach())
             if high_loss is not None:
-                target = real
-                if stock is not None:
+                if stock is None:
+                    high = high_loss(fake, real)
+                else:
                     with torch.no_grad():
-                        target = decode_window(stock, latents, start)[..., : real.shape[-1]]
-                high = high_loss(fake, target)
+                        kept = decode_window(stock, latents, start)[..., : real.shape[-1]]
+                    high = high_loss(fake, real, kept) if args.high_mode == "voicing" else high_loss(fake, kept)
                 loss_g = loss_g + args.w_high * high
                 stats["high"] = float(high.detach())
             if args.w_spec > 0:

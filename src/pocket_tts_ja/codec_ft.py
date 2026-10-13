@@ -133,6 +133,73 @@ class FineSpectrumLoss(nn.Module):
         return total / len(self.n_ffts)
 
 
+class HighBandWaveLoss(nn.Module):
+    """L1 distance between the high-passed waveforms, relative to the level of the target's.
+
+    Keeps the band above `f_lo` of the stock decoder sample by sample: a mel loss against its
+    output only keeps the level of the band, and noise at the right level is not what the stock
+    decoder has there. 0 for the stock decoder itself, about 1.4 for unrelated noise of the
+    same level.
+    """
+
+    def __init__(self, sample_rate: int, f_lo: float, taps: int = 255) -> None:
+        super().__init__()
+        from scipy.signal import firwin
+
+        kernel = torch.tensor(firwin(taps, f_lo, fs=sample_rate, pass_zero=False), dtype=torch.float32)
+        self.register_buffer("kernel", kernel[None, None], persistent=False)
+
+    def forward(self, fake: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pad = self.kernel.shape[-1] // 2
+        high_fake, high_target = F.conv1d(fake, self.kernel, padding=pad), F.conv1d(target, self.kernel, padding=pad)
+        return (high_fake - high_target).abs().mean() / (high_target.abs().mean() + 1e-5)
+
+
+class VoicingBlendMelLoss(nn.Module):
+    """Mel loss of the band above `f_min` against the recording in unvoiced frames and against the
+    stock decoder's output in voiced ones.
+
+    The stock decoder is 6 to 7 dB quieter than the recording above 4 kHz everywhere. Raised to
+    the recording's level, the band is right in a fricative (noise in the recording too) and
+    wrong in a vowel, where the decoder has only noise for the recording's harmonics (see
+    FineSpectrumLoss). So the target of a frame is the recording where its high band carries
+    the frame (energy above `f_min` against energy below 1 kHz, a soft switch around -3 dB) and
+    the stock decoder's output elsewhere, silence included.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int,
+        f_min: float,
+        n_ffts: tuple[int, ...] = (32, 64, 128, 256, 512, 1024, 2048),
+        n_mels: tuple[int, ...] = (2, 3, 7, 14, 27, 55, 110),
+    ) -> None:
+        super().__init__()
+        self.mel = MultiScaleMelLoss(sample_rate, n_ffts, n_mels, f_min=f_min)
+        self.n_fft, self.hop = 1024, 256
+        self.low = round(1000 * self.n_fft / sample_rate)
+        self.high = round(f_min * self.n_fft / sample_rate)
+        self.register_buffer("window", torch.hann_window(self.n_fft), persistent=False)
+
+    def unvoiced(self, real: torch.Tensor) -> torch.Tensor:
+        """[B, frames] in 0..1: how far the recording's frame is noise in the high band."""
+        power = torch.stft(real[:, 0], self.n_fft, self.hop, window=self.window, return_complex=True).abs().pow(2)
+        low, high = power[:, : self.low].sum(dim=1), power[:, self.high :].sum(dim=1)
+        ratio = 10 * torch.log10((high + 1e-10) / (low + 1e-10))
+        loud = (low + high) > 1e-3 * (low + high).amax(dim=1, keepdim=True)
+        return torch.sigmoid((ratio + 3.0) / 2.0) * loud
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor, stock: torch.Tensor) -> torch.Tensor:
+        weight = self.unvoiced(real)
+        total = fake.new_zeros(())
+        for spec in self.mel.specs:
+            mel_real, mel_stock = spec(real), spec(stock)
+            w = F.interpolate(weight[:, None], size=mel_real.shape[-1], mode="linear", align_corners=True)
+            target = w[:, :, None] * mel_real + (1 - w[:, :, None]) * mel_stock
+            total = total + F.l1_loss(spec(fake).clamp_min(1e-5).log10(), target.clamp_min(1e-5).log10())
+        return total / len(self.mel.specs)
+
+
 class SharedSpectrumLoss(nn.Module):
     """Deviation of the long-term spectrum that the clips of a batch share, at 12 Hz resolution.
 
