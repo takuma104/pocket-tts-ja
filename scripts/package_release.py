@@ -36,7 +36,7 @@ from pocket_tts.models.tts_model import TTSModel
 HEADER = """# Japanese Pocket TTS ({name}): {layers}-layer FlowLM, {params:.1f}M parameters with Mimi.
 # Classifier-free guidance is baked in; use it with the stock pocket-tts (>= 3.3.0):
 #   pocket-tts generate --config {config_ref} --voice prompt.wav --text "こんにちは。"
-# Weights: CC BY-NC 4.0 (trained on Emilia).
+# Weights: {license}.
 """
 
 
@@ -59,6 +59,8 @@ def main() -> None:
     parser.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32", help="of the FlowLM")
     parser.add_argument("--temp", type=float, default=None, help="default_temperature (config value if omitted)")
     parser.add_argument("--frames-after-eos", type=int, default=None, help="model_recommended_frames_after_eos")
+    parser.add_argument("--license", default="CC BY-NC 4.0 (trained on Emilia)",
+                        help="license line of the yaml header (the CC BY line: its own)")
     parser.add_argument("--mimi-decoder", type=Path, default=None,
                         help="fine-tuned decode side of Mimi (scripts/m2/train_mimi_decoder.py) stored in place "
                              "of the base file's")
@@ -101,6 +103,7 @@ def main() -> None:
         layers=cfg["flow_lm"]["transformer"]["num_layers"],
         params=sum(v.numel() for v in state.values()) / 1e6,
         config_ref=ref(config_path, pin=False) if args.repo else f"{args.name}.yaml",  # not in that commit
+        license=args.license,
     )
     config_path.write_text(header + yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
 
