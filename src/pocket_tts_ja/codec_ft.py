@@ -105,9 +105,13 @@ class SharedSpectrumLoss(nn.Module):
     it survives the mean over the batch of the log ratio of the time-averaged power spectra,
     where the differences of the single clips cancel. Squared, so that narrow lines dominate.
 
-    Only the band from `f_lo` to `f_hi` counts: below and above it the recordings have next to
-    no energy, the log ratio there is large and arbitrary, and its gradient swamps the rest
-    (unrestricted, the loss removed the lines but cost half of the mel loss's gain in Kana-CER).
+    Only the band from `f_lo` to `f_hi` counts, and a bin counts down to 40 dB under the mean
+    power of the band: where the recordings have next to no energy the log ratio is large and
+    arbitrary, and its gradient swamps the rest (without both limits the loss removed the lines
+    but cost half of the mel loss's gain in Kana-CER). The upper limit must not leave room,
+    though: with 11 kHz the adversarial run kept one line, at 11.2 kHz (a multiple of 200 Hz,
+    6 dB over its surroundings), where the training audio already rolls off. Up to Nyquist
+    the floor does the limiting.
     """
 
     def __init__(self, sample_rate: int, n_fft: int = 2048, f_lo: float = 300.0, f_hi: float = 11000.0) -> None:
