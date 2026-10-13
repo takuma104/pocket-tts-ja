@@ -121,7 +121,8 @@ def main() -> None:
         if args.spectrograms:
             png = args.out / "audio" / f"{key}.png"
             pick = shown[: (4 if args.ref is not None else 3)]  # recording, A, B, low B + high A
-            spectrogram(pick, png, args.spectrogram_sec)
+            ascii_labels = (["recording"] if args.ref is not None else []) + ["A", "B", "low B + high A"]  # no CJK font
+            spectrogram([(a, path) for a, (_, path) in zip(ascii_labels, pick)], png, args.spectrogram_sec)
             image = f"<details><summary>スペクトログラム（上から {' / '.join(html.escape(s[0]) for s in pick)}）</summary><img src='audio/{png.name}'></details>"
         blocks.append(f"<h3>{html.escape(key)}</h3><p>{html.escape(texts.get(key, ''))} "
                       f"<small>低域（{k0:g}kHz 以下）どうしの相関 {corr:.3f}</small></p>"

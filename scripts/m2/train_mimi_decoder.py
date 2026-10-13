@@ -230,6 +230,9 @@ def main() -> None:
                              "is kept); fine: codec_ft.FineSpectrumLoss against the recording")
     parser.add_argument("--w-high", type=float, default=15.0)
     parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
+    parser.add_argument("--gan-lowpass", type=float, default=0.0,
+                        help="Hz; the discriminators see both signals low-passed (with --high-cross: they would "
+                             "ask for the recording's high band again)")
     parser.add_argument("--gan-seconds", type=float, default=1.0, help="slice of the window the discriminators see")
     parser.add_argument("--ema", type=float, default=0.999)
     parser.add_argument("--clip", type=float, default=100.0, help="gradient norm clip of the decoder")
@@ -368,6 +371,17 @@ def main() -> None:
     count = 0
     began = time.time()
     segment = int(args.gan_seconds * sample_rate)
+    lowpass: torch.Tensor | None = None
+    if args.gan_lowpass > 0:
+        from scipy.signal import firwin
+
+        lowpass = torch.tensor(firwin(255, args.gan_lowpass, fs=sample_rate), dtype=torch.float32, device=device)[None, None]
+
+    def for_disc(x: torch.Tensor) -> torch.Tensor:
+        if lowpass is None:
+            return x
+        return torch.nn.functional.conv1d(x[:, None], lowpass, padding=lowpass.shape[-1] // 2)[:, 0]
+
     for wav, start in loader:
         if step >= args.max_steps or stop:
             break
@@ -387,8 +401,8 @@ def main() -> None:
                 group["lr"] = args.lr_d * scale
             offsets = torch.randint(0, real.shape[-1] - segment + 1, (wav.shape[0], 1), device=device)
             index = offsets + torch.arange(segment, device=device)[None]
-            real_seg = real[:, 0].gather(1, index)
-            fake_seg = fake[:, 0].gather(1, index)
+            real_seg = for_disc(real[:, 0].gather(1, index))
+            fake_seg = for_disc(fake[:, 0].gather(1, index))
             d_real, d_fake = disc(real_seg), disc(fake_seg.detach())
             loss_d = discriminator_loss(d_real, d_fake)
             opt_d.zero_grad(set_to_none=True)
