@@ -30,7 +30,10 @@ voice = model.get_state_for_audio_prompt("prompt.wav")
 audio = model.generate_audio(voice, "こんにちは。今日はいい天気ですね。")  # 24 kHz, torch.Tensor
 ```
 
-- `--voice` is a recording of the voice to clone (a few seconds of clean speech).
+- `--voice` is a recording of the voice to clone (a few seconds of clean speech). Without it the
+  CLI clones its default voice (alba, an English speaker), which reads Japanese as well (JSUT
+  Kana-CER 1.85%, against 2.29% with the JVS prompts). The pre-made voices cannot be selected by
+  name (`--voice alba`): they are embeddings computed with the official weights.
 - The config sets the sampling temperature to 0.3, the value every number below was measured
   with.
 - Use `japanese_24l.yaml` for the 24-layer model.
