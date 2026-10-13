@@ -80,11 +80,14 @@ class MultiScaleMelLoss(nn.Module):
         sample_rate: int,
         n_ffts: tuple[int, ...] = (32, 64, 128, 256, 512, 1024, 2048),
         n_mels: tuple[int, ...] = (5, 10, 20, 40, 80, 160, 320),
+        f_min: float = 0.0,
+        f_max: float | None = None,
     ) -> None:
         super().__init__()
         self.specs = nn.ModuleList(
             torchaudio.transforms.MelSpectrogram(
-                sample_rate, n_fft=n_fft, hop_length=n_fft // 4, n_mels=mels, power=1.0, norm=None, mel_scale="htk"
+                sample_rate, n_fft=n_fft, hop_length=n_fft // 4, n_mels=mels, power=1.0, norm=None, mel_scale="htk",
+                f_min=f_min, f_max=f_max,
             )
             for n_fft, mels in zip(n_ffts, n_mels, strict=True)
         )
@@ -94,6 +97,40 @@ class MultiScaleMelLoss(nn.Module):
         for spec in self.specs:
             total = total + F.l1_loss(spec(fake).clamp_min(1e-5).log10(), spec(real).clamp_min(1e-5).log10())
         return total / len(self.specs)
+
+
+class FineSpectrumLoss(nn.Module):
+    """L1 distance of log STFT magnitudes above `f_lo`, at fine frequency resolution only.
+
+    Above about 4 kHz the decoder cannot place the harmonics of a voice (the recording has them
+    up to 8 kHz). A loss that integrates over several harmonics - every mel band up there, and
+    every short window - then only asks for the energy of the band, and the decoder delivers it
+    as noise: a hiss that follows the voicing, worst for high voices. Bins a few tens of Hz wide
+    see the valleys between the harmonics; noise that fills them costs as much as a missing
+    peak, so the cheapest answer to harmonics that cannot be placed is a quiet band, while a
+    fricative, which is noise in the recording too, keeps its level.
+
+    A bin counts down to `floor` times the mean magnitude of the recording's band (per clip):
+    below that the log ratio is large and arbitrary.
+    """
+
+    def __init__(self, f_lo: float, sample_rate: int, n_ffts: tuple[int, ...] = (1024, 2048), floor: float = 3e-3) -> None:
+        super().__init__()
+        self.n_ffts = n_ffts
+        self.lows = [round(f_lo * n_fft / sample_rate) for n_fft in n_ffts]
+        self.floor = floor
+        for n_fft in n_ffts:
+            self.register_buffer(f"window_{n_fft}", torch.hann_window(n_fft), persistent=False)
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        total = fake.new_zeros(())
+        for n_fft, low in zip(self.n_ffts, self.lows, strict=True):
+            window = getattr(self, f"window_{n_fft}")
+            mag_fake = torch.stft(fake[:, 0], n_fft, n_fft // 4, window=window, return_complex=True).abs()[:, low:]
+            mag_real = torch.stft(real[:, 0], n_fft, n_fft // 4, window=window, return_complex=True).abs()[:, low:]
+            floor = self.floor * mag_real.mean(dim=(1, 2), keepdim=True) + 1e-7
+            total = total + F.l1_loss((mag_fake + floor).log10(), (mag_real + floor).log10())
+        return total / len(self.n_ffts)
 
 
 class SharedSpectrumLoss(nn.Module):

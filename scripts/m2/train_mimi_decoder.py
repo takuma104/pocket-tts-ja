@@ -46,6 +46,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from pocket_tts_ja.codec_ft import (
     Discriminators,
+    FineSpectrumLoss,
     MultiScaleMelLoss,
     SharedSpectrumLoss,
     decode_window,
@@ -54,6 +55,7 @@ from pocket_tts_ja.codec_ft import (
     discriminator_loss,
     feature_loss,
     generator_loss,
+    load_decoder,
 )
 from pocket_tts_ja.mimi_utils import load_mimi, load_pocket_config, to_mono_float
 
@@ -220,6 +222,14 @@ def main() -> None:
                         help="weight of the shared long-term spectrum loss (against tones at the stride frequencies)")
     parser.add_argument("--spec-band", type=float, nargs=2, default=(300.0, 11000.0), metavar=("LO", "HI"),
                         help="band of that loss in Hz; a tone moves to just outside it if it can")
+    parser.add_argument("--high-cross", type=float, default=0.0,
+                        help="Hz; above it the mel loss against the recording is replaced by --high-mode "
+                             "(0: the mel loss covers the whole band)")
+    parser.add_argument("--high-mode", choices=("stock", "fine"), default="stock",
+                        help="stock: mel loss against the stock decoder's output of the same latents (its high band "
+                             "is kept); fine: codec_ft.FineSpectrumLoss against the recording")
+    parser.add_argument("--w-high", type=float, default=15.0)
+    parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
     parser.add_argument("--gan-seconds", type=float, default=1.0, help="slice of the window the discriminators see")
     parser.add_argument("--ema", type=float, default=0.999)
     parser.add_argument("--clip", type=float, default=100.0, help="gradient norm clip of the decoder")
@@ -246,11 +256,24 @@ def main() -> None:
 
     mimi = load_mimi(load_pocket_config(), device)
     sample_rate, frame = mimi.sample_rate, mimi.frame_size
+    stock = load_mimi(load_pocket_config(), device) if args.high_cross > 0 and args.high_mode == "stock" else None
+    if args.init is not None:
+        load_decoder(mimi, args.init)
     params = [param for _, param in decoder_named_parameters(mimi)]
     for param in params:
         param.requires_grad_(True)
     ema = {name: param.detach().clone() for name, param in decoder_named_parameters(mimi)}
-    mel_loss = MultiScaleMelLoss(sample_rate).to(device)
+    mel_loss = MultiScaleMelLoss(sample_rate).to(device)  # validation: always the whole band
+    train_mel, high_loss = mel_loss, None
+    if args.high_cross > 0:
+        # the mel bands of the whole-band loss, shared out between the two parts by their width in mel
+        share = math.log10(1 + args.high_cross / 700) / math.log10(1 + sample_rate / 2 / 700)
+        full = (5, 10, 20, 40, 80, 160, 320)
+        low_mels = tuple(max(2, round(n * share)) for n in full)
+        high_mels = tuple(max(2, n - m) for n, m in zip(full, low_mels))
+        train_mel = MultiScaleMelLoss(sample_rate, n_mels=low_mels, f_max=args.high_cross).to(device)
+        high_loss = (MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross) if args.high_mode == "stock"
+                     else FineSpectrumLoss(args.high_cross, sample_rate)).to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
@@ -377,9 +400,17 @@ def main() -> None:
             stats["d_fake"] = float(torch.stack([f.detach().mean() for f, _ in d_fake]).mean())
             del d_real, d_fake, loss_d  # their feature maps would stay allocated through the decoder step
         if train_g:
-            mel = mel_loss(fake, real)
+            mel = train_mel(fake, real)
             loss_g = args.w_mel * mel
             stats["mel"] = float(mel.detach())
+            if high_loss is not None:
+                target = real
+                if stock is not None:
+                    with torch.no_grad():
+                        target = decode_window(stock, latents, start)[..., : real.shape[-1]]
+                high = high_loss(fake, target)
+                loss_g = loss_g + args.w_high * high
+                stats["high"] = float(high.detach())
             if args.w_spec > 0:
                 shared = spec_loss(fake, real)
                 loss_g = loss_g + args.w_spec * shared
