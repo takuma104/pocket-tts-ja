@@ -69,6 +69,8 @@ def main() -> None:
     parser.add_argument("--items", type=Path, default=None, help="items .jsonl / .json with key and text")
     parser.add_argument("--cross", type=float, nargs="+", default=[4000.0], help="crossover(s) in Hz")
     parser.add_argument("--atten", type=float, nargs="*", default=[6.0, 12.0], help="dB off B's high band")
+    parser.add_argument("--ref-high-for-a", action="store_true",
+                        help="also A's low band with the recording's high band: is B's low band the better one?")
     parser.add_argument("--spectrograms", action="store_true")
     parser.add_argument("--spectrogram-sec", type=float, default=4.0)
     parser.add_argument("--title", default="M2: bands swapped between two decoders")
@@ -107,7 +109,10 @@ def main() -> None:
             if i == 0:
                 versions.append((f"低域 {a_label} + 高域 {b_label}（{k:g}kHz）", la + hb))
                 if args.ref is not None:
-                    versions.append((f"低域 {b_label} + 高域 録音（{k:g}kHz）", lb + split(xr, sr, cross)[1]))
+                    high_ref = split(xr, sr, cross)[1]
+                    versions.append((f"低域 {b_label} + 高域 録音（{k:g}kHz）", lb + high_ref))
+                    if args.ref_high_for_a:
+                        versions.append((f"低域 {a_label} + 高域 録音（{k:g}kHz）", la + high_ref))
                 for db in args.atten:
                     versions.append((f"{b_label}、{k:g}kHz 以上を −{db:g}dB", lb + hb * 10 ** (-db / 20)))
         cells, shown = [], []
