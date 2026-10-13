@@ -304,6 +304,17 @@ def main() -> None:
     parser.add_argument(
         "--emilia-root", type=Path, default=Path("/mnt/ext11/Emilia-Dataset")
     )
+    parser.add_argument(
+        "--only-subset",
+        default=None,
+        help="take all speakers from this subset (Emilia-YODAS: a set of CC BY voices)",
+    )
+    parser.add_argument(
+        "--exclude-jsonl",
+        type=Path,
+        default=None,
+        help="references selected earlier; their speakers are not selected again",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("data/synth/refs"))
     parser.add_argument("--out-jsonl", type=Path, default=Path("data/synth/refs.jsonl"))
     parser.add_argument("--n-speakers", type=int, default=3000)
@@ -336,13 +347,22 @@ def main() -> None:
         per_speaker=args.per_speaker_fallbacks,
         rng=rng,
     )
-    quota = largest_remainder({s: hours[s] for s in pools}, args.n_speakers)
-    for s in quota:  # shift any shortfall to the other subset
-        short = quota[s] - len(pools[s])
-        if short > 0:
-            quota[s] -= short
-            other = next(o for o in quota if o != s)
-            quota[other] += short
+    if args.exclude_jsonl is not None:
+        with open(args.exclude_jsonl, encoding="utf-8") as f:
+            taken = {json.loads(line)["speaker"] for line in f}
+        pools = {s: {spk: c for spk, c in pool.items() if spk not in taken} for s, pool in pools.items()}
+        stats["eligible_speakers_not_selected_before"] = {k: len(v) for k, v in pools.items()}
+    if args.only_subset is not None:
+        pools = {args.only_subset: pools[args.only_subset]}
+        quota = {args.only_subset: min(args.n_speakers, len(pools[args.only_subset]))}
+    else:
+        quota = largest_remainder({s: hours[s] for s in pools}, args.n_speakers)
+        for s in quota:  # shift any shortfall to the other subset
+            short = quota[s] - len(pools[s])
+            if short > 0:
+                quota[s] -= short
+                other = next(o for o in quota if o != s)
+                quota[other] += short
     stats["quota"] = quota
     print(json.dumps(stats, ensure_ascii=False, indent=1), flush=True)
 
