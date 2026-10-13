@@ -75,12 +75,12 @@ def shared_peaks(r: npt.NDArray[np.float64], top: int = 4) -> str:
 
 def spectral_lines(r: npt.NDArray[np.float64]) -> tuple[float, int]:
     """Narrow lines of the mean spectrum of the frames (the Fourier transform of their mean
-    autocorrelation, 12.5 Hz bins) between 1 and 11.5 kHz: the largest excess in dB over the
+    autocorrelation, 12.5 Hz bins) between 1 and 11.95 kHz: the largest excess in dB over the
     median of the bins within 300 Hz, and the number of bins more than 2 dB above it."""
     sym = np.concatenate([r, [0.0], r[:0:-1]])
     db = 10 * np.log10(np.maximum(np.fft.rfft(sym).real, 1e-9))
     half = 24
-    excess = np.array([db[i] - np.median(db[i - half : i + half + 1]) for i in range(80, 921)])
+    excess = np.array([db[i] - np.median(db[i - half : i + half + 1]) for i in range(80, 957)])
     return float(excess.max()), int((excess > 2.0).sum())
 
 
