@@ -70,19 +70,19 @@ synthesized part of the training data, 95.7%
 | JVS zero-shot | similarity to the speaker's recording of the same sentence (ECAPA) | 0.538 | 0.536 | 0.538 |
 | Short texts (172 texts of 2–8 tokens) | did not stop / extra speech | 1 / 2 | 0 / 1 | 0 / 1 |
 
-**Stock wheel on CPU** (`pocket-tts==3.3.0`, the packaged `japanese` model, bfloat16 weights), next
-to the GPU evaluation of the same checkpoint:
+**Stock wheel on CPU** (`pocket-tts==3.3.0`, the packaged models; `japanese` is stored in bfloat16,
+`japanese_24l` in float32), next to the GPU evaluation of the same checkpoint:
 
-| Set | Metric | GPU | Stock wheel, CPU |
-|---|---|---:|---:|
-| JKYB-mini | accuracy | 93.8% | 94.5% |
-| JSUT | Kana-CER | 2.39% | 2.29% |
-| JVS zero-shot | Kana-CER / similarity | 2.58% / 0.536 | 2.07% / 0.533 |
-| Short texts | did not stop / extra speech | 0 / 1 | 1 / 2 |
+| Set | Metric | `japanese` GPU | `japanese` wheel | `japanese_24l` GPU | `japanese_24l` wheel |
+|---|---|---:|---:|---:|---:|
+| JKYB-mini | accuracy | 93.8% | 94.5% | 93.6% | 93.3% |
+| JSUT | Kana-CER | 2.39% | 2.29% | 2.55% | 2.43% |
+| JVS zero-shot | Kana-CER / similarity | 2.58% / 0.536 | 2.07% / 0.533 | 2.34% / 0.538 | 2.10% / 0.535 |
+| Short texts | did not stop / extra speech | 0 / 1 | 1 / 2 | 0 / 1 | 1 / 3 |
 
-The two columns differ in the random numbers, in the weight precision and in how long text is
-split, and the sets are small: the differences are of the size seen between neighboring
-checkpoints.
+The two evaluations differ in the random numbers, in how long text is split and, for `japanese`,
+in the weight precision, and the sets are small: the differences are of the size seen between
+neighboring checkpoints.
 
 ## How it was trained
 
