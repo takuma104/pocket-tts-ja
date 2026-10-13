@@ -96,6 +96,29 @@ class MultiScaleMelLoss(nn.Module):
         return total / len(self.specs)
 
 
+class SharedSpectrumLoss(nn.Module):
+    """Deviation of the long-term spectrum that the clips of a batch share, at 12 Hz resolution.
+
+    A decoder fine-tuned on the mel loss puts tones at multiples of its strides' frequencies
+    (200 Hz, 1.2 kHz) into fricatives: a metallic noise for a listener, invisible to a mel band,
+    which is hundreds of Hz wide up there. Such a line sits in the same bin for every clip, so
+    it survives the mean over the batch of the log ratio of the time-averaged power spectra,
+    where the differences of the single clips cancel.
+    """
+
+    def __init__(self, n_fft: int = 2048) -> None:
+        super().__init__()
+        self.n_fft = n_fft
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
+
+    def spectrum(self, wav: torch.Tensor) -> torch.Tensor:
+        spec = torch.stft(wav[:, 0], self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
+        return spec.abs().pow(2).mean(dim=-1).clamp_min(1e-9).log10()
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        return (self.spectrum(fake) - self.spectrum(real)).mean(dim=0).pow(2).mean()  # squared: narrow lines dominate
+
+
 class PeriodDiscriminator(nn.Module):
     def __init__(self, period: int, channels: tuple[int, ...] = (32, 128, 256, 512, 512)) -> None:
         super().__init__()

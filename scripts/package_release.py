@@ -11,8 +11,9 @@ Writes into --out:
 --mimi-decoder replaces the decode side of Mimi with a fine-tuned one (plan M2); the encoder, and
 with it the latents and voice prompts, stay the base file's.
 
-With --repo the yaml points at hf://<repo>/... (add --revision once the weights are uploaded to
-pin them); without it, at the local files, to test with the wheel before the upload:
+With --repo the yaml points at hf://<repo>/... (add --revision once the weights are committed, to
+pin them to that commit; the yaml goes into a later one); without it, at the local files, to test
+with the wheel before the upload:
 
     uv run python scripts/package_release.py configs/model/ja_6l_4k.yaml \
         runs/D1_6l/snapshots/step_00200000.safetensors --name japanese --out release
@@ -81,10 +82,10 @@ def main() -> None:
     tokenizer = args.out / "tokenizer.model"
     shutil.copyfile(cfg["flow_lm"]["lookup_table"]["tokenizer_path"], tokenizer)
 
-    def ref(path: Path) -> str:
+    def ref(path: Path, pin: bool = True) -> str:
         if args.repo is None:
             return str(path.resolve())
-        rev = f"@{args.revision}" if args.revision else ""
+        rev = f"@{args.revision}" if args.revision and pin else ""
         return f"hf://{args.repo}/{path.relative_to(args.out)}{rev}"
 
     cfg["weights_path"] = ref(weights)
@@ -99,7 +100,7 @@ def main() -> None:
         name=args.name,
         layers=cfg["flow_lm"]["transformer"]["num_layers"],
         params=sum(v.numel() for v in state.values()) / 1e6,
-        config_ref=ref(config_path) if args.repo else f"{args.name}.yaml",
+        config_ref=ref(config_path, pin=False) if args.repo else f"{args.name}.yaml",  # not in that commit
     )
     config_path.write_text(header + yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
 
