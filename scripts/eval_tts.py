@@ -230,6 +230,13 @@ def generate(
                 wav = mimi.decode_from_latent(lat[None].to(device), state)[0, 0].float().cpu().numpy()
             sf.write(str(out_dir / f"{c['key']}.wav"), np.clip(wav, -1, 1), mimi.sample_rate)
     gen_log.close()
+    if len(todo) < len(items):  # a rerun: the audio of the others is there already, their rows are in the log
+        rows: dict[str, dict[str, Any]] = {}
+        for line in open(out_dir.parent / "generation.jsonl", encoding="utf-8"):
+            row = json.loads(line)
+            rows[row["key"]] = row
+        done = [rows[it["key"]] for it in items if it["key"] in rows]
+        counts = {"no_eos": sum(bool(r["no_eos"]) for r in done), "silent": sum(r["frames"] < MIN_FRAMES for r in done)}
     return counts
 
 
