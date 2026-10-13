@@ -1,0 +1,55 @@
+# B-CC teacher (plan "CC-BY 系ライン"): the B1 recipe on data that carries no NC-licensed speech,
+# from the English 24L model with a tokenizer trained on that text only (data/tokenizer/ja_cc_4k).
+# Mix v1 (scripts/build_train_mix.py): YODAS3 (labels with the punctuation of
+# scripts/yodas3/repunctuate.py) 600.7 h + Emilia-YODAS 304.3 h + its gain copies 48.7 h, and the
+# synthetic speech that was cloned from Emilia-YODAS voices (manifest_ccref.jsonl, 141 h unique)
+# at s3 0.12, s4 0.01, s6a 0.03, s5 0.04, s6b 0.05, s7 0.007, s9 0.005 of the hours (each clip
+# at most ~3 times); 1,293.6 h. The sentences that had an NC voice are synthesized again with
+# CC BY voices (scripts/synth/run_cc_sets.sh) and join in a later mix. Constant LR to 600k like
+# B1; the decay and the short-text stage follow as separate configs with the same run_dir.
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v1.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+run_dir: runs/BCC_4k
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 600000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."

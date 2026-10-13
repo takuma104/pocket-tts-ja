@@ -9,6 +9,10 @@ and wraps save_checkpoint to keep an EMA snapshot (flow_lm weights only, safeten
 every checkpoint in run_dir/snapshots/, so evaluation can pick the best step even after the
 resumable checkpoints have rotated out.
 
+A file run_dir/next_config (the path of another config with the same run_dir) ends the run
+right after the next checkpoint with exit code 0; scripts/run_train.sh then goes on with that
+config, so a new mix or LR stage takes over without losing steps.
+
     uv run python scripts/train_ja.py configs/train/A5_8k.yaml
 """
 
@@ -34,6 +38,10 @@ from training.args import dump_args, load_args
 _upstream_save_checkpoint = tt.save_checkpoint
 
 
+class Handover(Exception):
+    """run_dir/next_config was found after a checkpoint."""
+
+
 def save_checkpoint_with_snapshot(
     run_dir: Path,
     step: int,
@@ -54,6 +62,8 @@ def save_checkpoint_with_snapshot(
     tmp = snap_dir / f"step_{step:08d}.tmp"
     safetensors.torch.save_file(flow, str(tmp))
     tmp.rename(snap_dir / f"step_{step:08d}.safetensors")
+    if (Path(run_dir) / "next_config").exists():
+        raise Handover(f"step {step}: handing over to {(Path(run_dir) / 'next_config').read_text().strip()}")
 
 
 def main(config_path: str):
@@ -78,6 +88,8 @@ if __name__ == "__main__":
     code = 0
     try:
         main(sys.argv[1])
+    except Handover as stop:
+        print(stop, flush=True)
     except Exception:
         # the loader threads would keep a failed run alive (and its GPU memory) for ever
         traceback.print_exc()
