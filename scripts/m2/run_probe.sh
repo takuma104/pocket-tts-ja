@@ -16,6 +16,7 @@ UV=$(command -v uv || echo ~/.local/bin/uv)
 JVS="jvs=data/jvs_ver1/jvs0[0-9][0-9]/parallel100/wav24kHz16bit/VOICEACTRESS100_00[1-5].wav"
 DEC=runs/$NAME/decoder_step_$(printf %08d "$STEPS").safetensors
 for try in 1 2 3 4; do
+  [ -f "$DEC" ] && break  # trained already: only the steps after it are repeated
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $UV run python scripts/m2/train_mimi_decoder.py "runs/$NAME" \
     --data irodori=data/synth/s3_full/manifest.jsonl:data/synth/s3_full/audio:0.5 \
     --data emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:0.5 \
@@ -26,7 +27,10 @@ for try in 1 2 3 4; do
 done
 [ -f "$DEC" ] || { echo "$(date) PROBE_FAILED"; exit 1; }
 echo "$(date) trained: $(grep -a '^valid @' "runs/$NAME.log" | tail -1 | cut -c1-120)"
-$UV run python scripts/m2/recon_jvs.py --out exp/m2/recon --decoder "$NAME=$DEC" > "runs/probe_recon_$NAME.log" 2>&1 || exit 1
+for try in 1 2 3 4 5 6; do  # the GPU is shared: the decoding fails when it is full
+  $UV run python scripts/m2/recon_jvs.py --out exp/m2/recon --decoder "$NAME=$DEC" > "runs/probe_recon_$NAME.log" 2>&1 && break
+  sleep 30
+done
 for s in jvs_bal short; do
   for try in 1 2 3; do
     $UV run python scripts/eval_tts.py runs/D1_6l_b --snapshot 120000 --set $s --voice rotation --cfg 1.0 \
