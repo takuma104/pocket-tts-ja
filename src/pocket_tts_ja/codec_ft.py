@@ -94,8 +94,9 @@ def expand_residual_layers(mimi: MimiModel, n_residual_layers: int) -> None:
 def load_decoder(mimi: MimiModel, path: Path) -> None:
     """Replace the decode side of `mimi` with a fine-tuned one (file from `decoder_state`).
 
-    A file from a decoder with more residual blocks per stage expands `mimi` to match first."""
-    state = safetensors.torch.load_file(str(path))
+    A file from a decoder with more residual blocks per stage expands `mimi` to match first. The
+    tensors of a harmonic head (pocket_tts_ja.harmonic) are left to harmonic.load_harmonic_head."""
+    state = {k: v for k, v in safetensors.torch.load_file(str(path)).items() if not k.startswith("mimi.harmonic.")}
     last = max(int(name.split(".")[3]) for name in state if name.startswith("mimi.decoder.model."))
     expand_residual_layers(mimi, (last + 1 - 3) // len(mimi.decoder.ratios) - 2)  # entries: 1 + stages * (2 + n) + 2
     own = mimi.state_dict()

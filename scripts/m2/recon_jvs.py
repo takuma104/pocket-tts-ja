@@ -17,7 +17,8 @@ decoder:
         orig=exp/m2/recon/asr_orig/kana.jsonl mimi=exp/m2/recon/asr_mimi/kana.jsonl \
         pilot5k=exp/m2/recon/asr_pilot5k/kana.jsonl
 
-Directories that already hold every clip are skipped.
+Directories that already hold every clip are skipped. A decoder file with a harmonic head
+(pocket_tts_ja.harmonic, trained with --harmonic oracle) is driven by the recording's F0.
 """
 
 import argparse
@@ -30,6 +31,7 @@ import soundfile as sf
 import torch
 
 from pocket_tts_ja.codec_ft import load_decoder
+from pocket_tts_ja.harmonic import decode_harmonic, f0_track, harmonic_source, load_harmonic_head
 from pocket_tts_ja.jvs import read_genders
 from pocket_tts_ja.mimi_utils import decode, encode, load_mimi, load_pocket_config, to_mono_float
 
@@ -82,13 +84,22 @@ def main() -> None:
         latents[it["key"]] = encode(mimi, waves[it["key"]], device)
     for name, path in todo:
         (args.out / name).mkdir(exist_ok=True)
+        head = None
         if path is not None:
             mimi = load_mimi(load_pocket_config(), device)
             load_decoder(mimi, path)
+            hop = round(sample_rate / mimi.encoder_frame_rate)
+            head = load_harmonic_head(path, mimi.decoder.dimension, hop, device)
         for it in items:
             key = it["key"]
             if name == "orig":
                 wav = waves[key]
+            elif head is not None:
+                lat = latents[key]
+                f0 = torch.from_numpy(f0_track(waves[key], sample_rate, lat.shape[0] * 16))[None].to(device)
+                with torch.no_grad():
+                    out = decode_harmonic(mimi, head, lat[None], 0, harmonic_source(f0, hop, sample_rate))
+                wav = out[0, 0, : len(waves[key])].float().cpu().numpy()
             else:
                 wav = decode(mimi, latents[key], len(waves[key])).float().cpu().numpy()
             write_wav(args.out / name / f"{key}.wav", wav, sample_rate)

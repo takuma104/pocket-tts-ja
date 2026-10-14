@@ -67,6 +67,7 @@ from pocket_tts_ja.codec_ft import (
     generator_loss,
     load_decoder,
 )
+from pocket_tts_ja.harmonic import BANDS, HarmonicHead, decode_harmonic, f0_track, harmonic_source, head_state
 from pocket_tts_ja.mimi_utils import load_mimi, load_pocket_config, to_mono_float
 
 VALID_MOD = 200
@@ -125,13 +126,17 @@ class BucketBatches:
 
 
 class Collate:
-    def __init__(self, frame: int, frames: int, prefix_prob: float, gain_db: tuple[float, float]) -> None:
+    def __init__(
+        self, frame: int, frames: int, prefix_prob: float, gain_db: tuple[float, float], f0_hop: int = 0, sample_rate: int = 24000
+    ) -> None:
         self.frame = frame
         self.frames = frames
         self.prefix_prob = prefix_prob
         self.gain_db = gain_db
+        self.f0_hop = f0_hop  # > 0: also the F0 of the decoded window at this hop (harmonic source)
+        self.sample_rate = sample_rate
 
-    def __call__(self, wavs: list[torch.Tensor]) -> tuple[torch.Tensor, int]:
+    def __call__(self, wavs: list[torch.Tensor]) -> tuple[torch.Tensor, int, torch.Tensor]:
         need = self.frames * self.frame
         wavs = [w if len(w) >= need else torch.nn.functional.pad(w, (0, need - len(w))) for w in wavs]
         latest = min(len(w) for w in wavs) // self.frame - self.frames
@@ -142,7 +147,11 @@ class Collate:
             gain = 10 ** (random.uniform(*self.gain_db) / 20)
             gain = min(gain, 0.99 / (float(wav.abs().max()) + 1e-9))
             out.append(wav[:length] * gain)
-        return torch.stack(out)[:, None], start
+        f0 = torch.zeros(0)
+        if self.f0_hop:
+            n = self.frames * self.frame // self.f0_hop
+            f0 = torch.stack([torch.from_numpy(f0_track(w[start * self.frame :].numpy(), self.sample_rate, n)) for w in out])
+        return torch.stack(out)[:, None], start, f0
 
 
 def load_rows(
@@ -182,18 +191,26 @@ def spread(items: list[str], count: int) -> list[str]:
 
 
 @contextmanager
-def ema_weights(mimi: torch.nn.Module, ema: dict[str, torch.Tensor]) -> Iterator[None]:
+def ema_weights(named: list[tuple[str, torch.nn.Parameter]], ema: dict[str, torch.Tensor]) -> Iterator[None]:
     """Run the block with the EMA weights in the model."""
-    backup = {name: param.detach().clone() for name, param in decoder_named_parameters(mimi)}
+    backup = {name: param.detach().clone() for name, param in named}
     with torch.no_grad():
-        for name, param in decoder_named_parameters(mimi):
+        for name, param in named:
             param.copy_(ema[name])
     try:
         yield
     finally:
         with torch.no_grad():
-            for name, param in decoder_named_parameters(mimi):
+            for name, param in named:
                 param.copy_(backup[name])
+
+
+def trainable(mimi: torch.nn.Module, head: HarmonicHead | None) -> list[tuple[str, torch.nn.Parameter]]:
+    """The decode side of Mimi, and the harmonic head if there is one."""
+    named = list(decoder_named_parameters(mimi))
+    if head is not None:
+        named += [(f"harmonic.{name}", param) for name, param in head.named_parameters()]
+    return named
 
 
 def high_band_structure(
@@ -233,15 +250,26 @@ def high_band_structure(
 
 @torch.no_grad()
 def validate(
-    mimi: torch.nn.Module, mel_loss: MultiScaleMelLoss, sets: dict[str, list[torch.Tensor]], device: torch.device
+    mimi: torch.nn.Module,
+    mel_loss: MultiScaleMelLoss,
+    sets: dict[str, list[torch.Tensor]],
+    device: torch.device,
+    head: HarmonicHead | None = None,
+    f0s: dict[str, list[torch.Tensor]] | None = None,
 ) -> dict[str, float]:
     out = {}
     for name, clips in sets.items():
         total = 0.0
         refs, fakes = [], []
-        for clip in clips:
+        for i, clip in enumerate(clips):
             wav = clip.to(device)[None, None]
-            fake = decode_window(mimi, mimi.encode_to_latent(wav), 0)[..., : wav.shape[-1]]
+            latents = mimi.encode_to_latent(wav)
+            if head is not None and f0s is not None:
+                hop = round(mimi.sample_rate / mimi.encoder_frame_rate)
+                source = harmonic_source(f0s[name][i][None].to(device), hop, mimi.sample_rate)
+                fake = decode_harmonic(mimi, head, latents, 0, source)[..., : wav.shape[-1]]
+            else:
+                fake = decode_window(mimi, latents, 0)[..., : wav.shape[-1]]
             total += float(mel_loss(fake, wav))
             refs.append(clip.numpy())
             fakes.append(fake[0, 0].float().cpu().numpy())
@@ -285,6 +313,8 @@ def main() -> None:
     parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
     parser.add_argument("--init-disc", type=Path, default=None,
                         help="checkpoint.pt of another run whose discriminators to start from (new run only)")
+    parser.add_argument("--harmonic", choices=("none", "oracle"), default="none",
+                        help="oracle: add pocket_tts_ja.harmonic's source, driven by the recording's F0 (diagnostic)")
     parser.add_argument("--residual-layers", type=int, default=1,
                         help="residual blocks per upsampling stage of the SEANet decoder (added ones start as identities)")
     parser.add_argument("--gan-lowpass", type=float, default=0.0,
@@ -320,10 +350,13 @@ def main() -> None:
     if args.init is not None:
         load_decoder(mimi, args.init)
     expand_residual_layers(mimi, args.residual_layers)
-    params = [param for _, param in decoder_named_parameters(mimi)]
+    hop = round(sample_rate / mimi.encoder_frame_rate)
+    head = HarmonicHead(mimi.decoder.dimension, 2 * len(BANDS), hop).to(device) if args.harmonic == "oracle" else None
+    named = trainable(mimi, head)
+    params = [param for _, param in named]
     for param in params:
         param.requires_grad_(True)
-    ema = {name: param.detach().clone() for name, param in decoder_named_parameters(mimi)}
+    ema = {name: param.detach().clone() for name, param in named}
     mel_loss = MultiScaleMelLoss(sample_rate).to(device)  # validation: always the whole band
     train_mel, high_loss = mel_loss, None
     if args.high_cross > 0:
@@ -355,7 +388,7 @@ def main() -> None:
         saved = torch.load(checkpoint, map_location=device, weights_only=True)
         step = int(saved["step"])
         with torch.no_grad():
-            for name, param in decoder_named_parameters(mimi):
+            for name, param in named:
                 param.copy_(saved["decoder"][name])
         ema = saved["ema"]
         opt_g.load_state_dict(saved["opt_g"])
@@ -377,11 +410,15 @@ def main() -> None:
     valid_sets = {
         name: [read_clip(p, sample_rate, frame, VALID_FRAMES) for p in items] for name, items in valid_paths.items()
     }
+    valid_f0 = (
+        {name: [torch.from_numpy(f0_track(c.numpy(), sample_rate, len(c) // hop)) for c in clips] for name, clips in valid_sets.items()}
+        if head is not None else None
+    )
     print("validation clips: " + ", ".join(f"{k} {len(v)}" for k, v in valid_sets.items()), flush=True)
     loader = DataLoader(
         ClipDataset(paths, sample_rate, frame, max_frames),
         batch_sampler=BucketBatches(durations, sources, args.batch_size, args.seed + step),
-        collate_fn=Collate(frame, args.frames, args.prefix_prob, tuple(args.gain_db)),
+        collate_fn=Collate(frame, args.frames, args.prefix_prob, tuple(args.gain_db), hop if head is not None else 0, sample_rate),
         num_workers=args.workers,
         # forkserver (the default from Python 3.14) leaves the workers running after this process:
         # they watch the fork server, and it stays up for as long as they hold its pipe
@@ -406,7 +443,7 @@ def main() -> None:
     def save(at: int, export: bool) -> None:
         state: dict[str, Any] = {
             "step": at,
-            "decoder": {name: param.detach() for name, param in decoder_named_parameters(mimi)},
+            "decoder": {name: param.detach() for name, param in named},
             "ema": ema,
             "opt_g": opt_g.state_dict(),
         }
@@ -416,8 +453,9 @@ def main() -> None:
         torch.save(state, tmp)
         tmp.replace(checkpoint)
         if export:
-            with ema_weights(mimi, ema):
-                safetensors.torch.save_file(decoder_state(mimi), str(args.run_dir / f"decoder_step_{at:08d}.safetensors"))
+            with ema_weights(named, ema):
+                state = decoder_state(mimi) | (head_state(head) if head is not None else {})
+                safetensors.torch.save_file(state, str(args.run_dir / f"decoder_step_{at:08d}.safetensors"))
 
     def lr_scale(at: int) -> float:
         progress = min(1.0, max(0.0, (at - g_start) / max(1, args.max_steps - g_start)))
@@ -433,7 +471,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_term)
 
     if step == 0:
-        log("valid", 0, validate(mimi, mel_loss, valid_sets, device))
+        log("valid", 0, validate(mimi, mel_loss, valid_sets, device, head, valid_f0))
         print(f"valid @ 0: {json.loads(open(args.run_dir / 'progress.jsonl').readlines()[-1])}", flush=True)
     sums: dict[str, float] = defaultdict(float)
     count = 0
@@ -450,7 +488,7 @@ def main() -> None:
             return x
         return torch.nn.functional.conv1d(x[:, None], lowpass, padding=lowpass.shape[-1] // 2)[:, 0]
 
-    for wav, start in loader:
+    for wav, start, f0 in loader:
         if step >= args.max_steps or stop:
             break
         wav = wav.to(device, non_blocking=True)
@@ -462,7 +500,12 @@ def main() -> None:
             latents = mimi.encode_to_latent(wav)
         real = wav[..., start * frame :]
         with torch.set_grad_enabled(train_g):
-            fake = decode_window(mimi, latents, start)[..., : real.shape[-1]]
+            if head is not None:
+                phase0 = 2 * math.pi * torch.rand(wav.shape[0], device=device)
+                source = harmonic_source(f0.to(device), hop, sample_rate, phase0=phase0)
+                fake = decode_harmonic(mimi, head, latents, start, source)[..., : real.shape[-1]]
+            else:
+                fake = decode_window(mimi, latents, start)[..., : real.shape[-1]]
         stats: dict[str, float] = {}
         if disc is not None and opt_d is not None:
             for group in opt_d.param_groups:
@@ -510,7 +553,7 @@ def main() -> None:
             stats["grad_g"] = float(torch.nn.utils.clip_grad_norm_(params, args.clip))
             opt_g.step()
             with torch.no_grad():
-                for name, param in decoder_named_parameters(mimi):
+                for name, param in named:
                     ema[name].lerp_(param, 1 - args.ema)
         else:
             with torch.no_grad():
@@ -531,8 +574,8 @@ def main() -> None:
             count = 0
             began = time.time()
         if step % args.valid_every == 0 or step == args.max_steps:
-            with ema_weights(mimi, ema):
-                values = validate(mimi, mel_loss, valid_sets, device)
+            with ema_weights(named, ema):
+                values = validate(mimi, mel_loss, valid_sets, device, head, valid_f0)
             log("valid", step, values)
             print(f"valid @ {step}: " + " ".join(f"{k} {v:.4f}" for k, v in values.items()), flush=True)
         if step % args.save_every == 0 or step == args.max_steps:
