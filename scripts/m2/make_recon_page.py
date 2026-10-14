@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--sentences", type=int, default=3, help="per speaker")
     parser.add_argument("--title", default="M2: decoders on the same latents (JVS reconstruction)")
+    parser.add_argument("--note", action="append", default=[], help="NAME=TEXT: what a column is, listed above the table")
     parser.add_argument("--rank", choices=("unvoiced", "voiced"), default="unvoiced",
                         help="pick the sentences with the largest share of unvoiced-consonant frames (the periodic "
                              "noise) or of voiced frames (the harmonics of the high band)")
@@ -74,11 +75,16 @@ def main() -> None:
                     subprocess.run(["rsync", "-a", f"{src}/{name}/{it['key']}.wav", str(dst)], check=True)
                 cells.append(f'<td><audio controls preload="none" src="audio/{dst.name}"></audio></td>')
             rows.append("<tr>" + "".join(cells) + "</tr>")
+    notes = "".join(
+        f"<li><b>{html.escape(name)}</b>: {html.escape(text)}</li>" for name, text in (n.split("=", 1) for n in args.note)
+    )
+    notes = f"<ul>{notes}</ul>" if notes else ""
     page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>{html.escape(args.title)}</title>
 <style>body{{font-family:sans-serif;margin:1.5em}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px 8px;vertical-align:top}}
 td.text{{max-width:26em}}td.spk{{background:#eef;font-weight:bold}}audio{{width:230px;height:32px}}small{{color:#666}}</style></head><body>
 <h1>{html.escape(args.title)}</h1>
 <p>どの列も同じ潜在表現（録音を Mimi の encoder に通したもの）を復号している。列の違い = decoder の違い。</p>
+{notes}
 <table>{head}{''.join(rows)}</table></body></html>"""
     (args.out / "index.html").write_text(page, encoding="utf-8")
     print(f"{args.out / 'index.html'}: {len(order)} speakers x {args.sentences} sentences x {len(args.names)} columns")

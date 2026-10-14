@@ -75,7 +75,12 @@ V2 = HarmonicConfig(
     250.0, True, 0.2, 4,
 )
 V3 = HarmonicConfig(V2.bands, V2.edge, V2.centered, V2.allowed_range, V2.fill_frames, refine=True)
-CONFIGS = {"v1": V1, "v2": V2, "v3": V3}
+# V3 up to 8 kHz only: with the source above it the decoder's 8-11 kHz became twice as harmonic as speech
+V4 = HarmonicConfig(
+    tuple(b for b in V2.bands if b[1] <= 7500.0) + ((7500.0, 8000.0),), V2.edge, V2.centered, V2.allowed_range, V2.fill_frames,
+    refine=True,
+)
+CONFIGS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4}
 BANDS = V1.bands
 
 
