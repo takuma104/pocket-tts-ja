@@ -16,6 +16,10 @@ One id in 200 (by hash) is held out for validation. --valid-glob adds validation
 
 SIGTERM to the pid in run_dir/pid writes a checkpoint and exits.
 
+Validation also records, for the voiced frames of high voices (F0 >= 165 Hz) of each validation
+set, the comb of the bands 4-6 and 6-8 kHz at the recording's F0 and their level re the recording
+(scripts/m2/hf_structure.py): whether the decoder puts harmonics or noise above 4 kHz.
+
 Writes run_dir/checkpoint.pt (at every validation; resumed automatically),
 run_dir/decoder_step_<step>.safetensors (EMA weights under their `mimi.*` names, for
 pocket_tts_ja.codec_ft.load_decoder) and run_dir/progress.jsonl. wandb gets scalars only.
@@ -39,11 +43,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 import safetensors.torch
 import soundfile as sf
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from hf_structure import N_FFT, PAD, band_stats, refine_f0, spectrum, voiced_f0
 from pocket_tts_ja.codec_ft import (
     Discriminators,
     FineSpectrumLoss,
@@ -55,6 +62,7 @@ from pocket_tts_ja.codec_ft import (
     decoder_named_parameters,
     decoder_state,
     discriminator_loss,
+    expand_residual_layers,
     feature_loss,
     generator_loss,
     load_decoder,
@@ -64,6 +72,8 @@ from pocket_tts_ja.mimi_utils import load_mimi, load_pocket_config, to_mono_floa
 VALID_MOD = 200
 VALID_CLIPS = 128
 VALID_FRAMES = 64
+HIGH_BANDS = ((4000, 6000), (6000, 8000))
+HIGH_VOICE_F0 = 165.0
 
 
 def is_valid_id(utt_id: str) -> bool:
@@ -186,6 +196,41 @@ def ema_weights(mimi: torch.nn.Module, ema: dict[str, torch.Tensor]) -> Iterator
                 param.copy_(backup[name])
 
 
+def high_band_structure(
+    refs: list[npt.NDArray[np.float32]], fakes: list[npt.NDArray[np.float32]], sample_rate: int
+) -> dict[str, float]:
+    """Comb at the recording's F0 and level re the recording of HIGH_BANDS, over the voiced frames
+    of high voices."""
+    import hf_structure
+
+    saved = hf_structure.BANDS
+    hf_structure.BANDS = HIGH_BANDS
+    step = sample_rate / (N_FFT * PAD)
+    combs, p_ref, p_fake = [], [], []
+    try:
+        for ref, fake in zip(refs, fakes, strict=True):
+            for start, f0 in voiced_f0(ref, sample_rate):
+                spec_ref = spectrum(ref[start : start + N_FFT])
+                f0 = refine_f0(np.log(spec_ref + 1e-9), f0, step)
+                if f0 < HIGH_VOICE_F0:
+                    continue
+                stats_ref, stats_fake = band_stats(spec_ref, f0, step), band_stats(spectrum(fake[start : start + N_FFT]), f0, step)
+                combs.append([s[0] for s in stats_fake])
+                p_ref.append([s[1] for s in stats_ref])
+                p_fake.append([s[1] for s in stats_fake])
+    finally:
+        hf_structure.BANDS = saved
+    if not combs:
+        return {}
+    comb = np.mean(combs, axis=0)
+    level = 10 * np.log10(np.mean(p_fake, axis=0) / np.mean(p_ref, axis=0))
+    out = {}
+    for (lo, hi), c, lv in zip(HIGH_BANDS, comb, level, strict=True):
+        band = f"{lo // 1000}_{hi // 1000}k"
+        out[f"comb{band}"], out[f"level{band}"] = float(c), float(lv)
+    return out
+
+
 @torch.no_grad()
 def validate(
     mimi: torch.nn.Module, mel_loss: MultiScaleMelLoss, sets: dict[str, list[torch.Tensor]], device: torch.device
@@ -193,11 +238,15 @@ def validate(
     out = {}
     for name, clips in sets.items():
         total = 0.0
+        refs, fakes = [], []
         for clip in clips:
             wav = clip.to(device)[None, None]
             fake = decode_window(mimi, mimi.encode_to_latent(wav), 0)[..., : wav.shape[-1]]
             total += float(mel_loss(fake, wav))
+            refs.append(clip.numpy())
+            fakes.append(fake[0, 0].float().cpu().numpy())
         out[f"mel_{name}"] = total / max(len(clips), 1)
+        out |= {f"{key}_{name}": value for key, value in high_band_structure(refs, fakes, mimi.sample_rate).items()}
     return out
 
 
@@ -234,6 +283,10 @@ def main() -> None:
                              "unvoiced frames, the stock decoder in voiced ones (VoicingBlendMelLoss)")
     parser.add_argument("--w-high", type=float, default=15.0)
     parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
+    parser.add_argument("--init-disc", type=Path, default=None,
+                        help="checkpoint.pt of another run whose discriminators to start from (new run only)")
+    parser.add_argument("--residual-layers", type=int, default=1,
+                        help="residual blocks per upsampling stage of the SEANet decoder (added ones start as identities)")
     parser.add_argument("--gan-lowpass", type=float, default=0.0,
                         help="Hz; the discriminators see both signals low-passed (with --high-cross: they would "
                              "ask for the recording's high band again)")
@@ -266,6 +319,7 @@ def main() -> None:
     stock = load_mimi(load_pocket_config(), device) if args.high_cross > 0 and args.high_mode != "fine" else None
     if args.init is not None:
         load_decoder(mimi, args.init)
+    expand_residual_layers(mimi, args.residual_layers)
     params = [param for _, param in decoder_named_parameters(mimi)]
     for param in params:
         param.requires_grad_(True)
@@ -309,6 +363,9 @@ def main() -> None:
             disc.load_state_dict(saved["disc"])
             opt_d.load_state_dict(saved["opt_d"])
         print(f"resumed from step {step}", flush=True)
+    elif args.init_disc is not None and disc is not None:
+        disc.load_state_dict(torch.load(args.init_disc, map_location=device, weights_only=True)["disc"])
+        print(f"discriminators from {args.init_disc}", flush=True)
 
     min_seconds = (args.frames + 2) * frame / sample_rate
     paths, durations, sources, held_out = load_rows(args.data, min_seconds, args.max_seconds)
