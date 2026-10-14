@@ -226,8 +226,17 @@ def generate(
                 counts["silent"] += 1
                 wav = np.zeros(int(0.1 * mimi.sample_rate), dtype=np.float32)
             else:
-                state = init_states(mimi, 1, (lat.shape[0] + MIN_FRAMES) * ratio)
-                wav = mimi.decode_from_latent(lat[None].to(device), state)[0, 0].float().cpu().numpy()
+                harmonic = getattr(mimi, "harmonic", None)
+                if harmonic is not None:  # a decoder with a harmonic source driven by its own F0 head
+                    from pocket_tts_ja.harmonic import decode_harmonic
+
+                    head, config = harmonic
+                    with torch.no_grad():
+                        out = decode_harmonic(mimi, head, lat[None].to(device), 0, None, MIN_FRAMES, config=config)
+                    wav = out[0, 0].float().cpu().numpy()
+                else:
+                    state = init_states(mimi, 1, (lat.shape[0] + MIN_FRAMES) * ratio)
+                    wav = mimi.decode_from_latent(lat[None].to(device), state)[0, 0].float().cpu().numpy()
             sf.write(str(out_dir / f"{c['key']}.wav"), np.clip(wav, -1, 1), mimi.sample_rate)
     gen_log.close()
     if len(todo) < len(items):  # a rerun: the audio of the others is there already, their rows are in the log
@@ -401,6 +410,12 @@ def main():
             from pocket_tts_ja.codec_ft import load_decoder
 
             load_decoder(mimi, args.mimi_decoder)
+            from pocket_tts_ja.harmonic import load_harmonic_head
+
+            loaded = load_harmonic_head(args.mimi_decoder, mimi.decoder.dimension, round(mimi.sample_rate / mimi.encoder_frame_rate), device)
+            if loaded is not None:
+                assert loaded[0].f0 is not None, "this harmonic decoder needs the recording's F0 (--harmonic oracle): not for TTS"
+                mimi.harmonic = loaded
         counts = generate(model, mimi, items, audio_dir, args)
         del model
         torch.cuda.empty_cache()
