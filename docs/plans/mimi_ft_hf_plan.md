@@ -128,7 +128,7 @@ JVS 再構成（10 話者 × 6 文）の有声フレームで、出力自身の 
 |---|---|
 | 出発点 | keep4k（`runs/M2_gs2gan_keep4k/decoder_step_00090000.safetensors`）。encoder と latent は固定 |
 | 学習 | `scripts/m2/train_mimi_decoder.py`。batch 16、窓 32 フレーム、クリップは 8 秒以下、10k step、decoder の LR 5e-5（warmup 500、cosine で 0.1 倍まで）、識別器 2e-4。識別器は新しく作るので、最初の 2,000 step は識別器だけを学習する。EMA 0.999 |
-| データ D-nat | Emilia HQ 50%、スタジオ録音 50%（Hi-Fi-CAPTAIN 女性 25 / 男性 15、JVNV 10）。あみたろは 1 話者 424 文と少ないので最初は入れない。JVS と JSUT は入れない |
+| データ D-nat | Emilia HQ 50%、スタジオ録音 50%（Hi-Fi-CAPTAIN 女性 25 / 男性 15、JVNV 10）。展開済みの量: Emilia HQ 85.7h（52,519）、Hi-Fi-CAPTAIN 女性 23.0h（18,831）/ 男性 22.0h（18,841）、JVNV 3.4h（1,480）、あみたろ 0.46h（422）。あみたろは 1 話者で少ないので最初は入れない。JVS と JSUT は入れない |
 | 名前 | run は `runs/M2H_<条件>`。評価の出力は `exp/m2/recon/<条件>` |
 | 学習中の監視 | 検証時に、JVS 女性の有声フレームの 4–6kHz の comb とレベルを記録する（trainer に追加する） |
 
