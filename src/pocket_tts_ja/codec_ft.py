@@ -21,7 +21,9 @@ from torch import nn
 from torch.nn.utils.parametrizations import weight_norm
 
 from pocket_tts.models.mimi import MimiModel
+from pocket_tts.modules.seanet import SEANetDecoder, SEANetResnetBlock
 from pocket_tts.modules.stateful_module import increment_steps, init_states
+from training.modules.utils import stamp_state_names
 
 DECODER_MODULES = ("quantizer", "upsample", "decoder_transformer", "decoder")
 DECODE_CONTEXT_FRAMES = 8
@@ -45,9 +47,57 @@ def decoder_state(mimi: MimiModel) -> dict[str, torch.Tensor]:
     }
 
 
+def residual_layers(decoder: SEANetDecoder) -> int:
+    """Residual blocks per upsampling stage of a SEANet decoder."""
+    return sum(isinstance(layer, SEANetResnetBlock) for layer in decoder.model) // len(decoder.ratios)
+
+
+def expand_residual_layers(mimi: MimiModel, n_residual_layers: int) -> None:
+    """Give every upsampling stage of the SEANet decoder `n_residual_layers` residual blocks.
+
+    The blocks SEANet would build for that setting (dilation 2**j for the j-th) are inserted after
+    the existing ones, with the last convolution of each new block zeroed: the new blocks are
+    identities, so the decoder's output is unchanged until they train. The trained tensors keep
+    their values; only the indices of `decoder.model` after an insertion move (a file from
+    `decoder_state` of an expanded decoder carries the new names, and `load_decoder` expands to
+    match it).
+    """
+    decoder: SEANetDecoder = mimi.decoder
+    have = residual_layers(decoder)
+    assert n_residual_layers >= have, (n_residual_layers, have)
+    if n_residual_layers == have:
+        return
+    first = next(layer for layer in decoder.model if isinstance(layer, SEANetResnetBlock))
+    kernel = first.block[1].conv.kernel_size[0]
+    pad_mode = first.block[1].pad_mode
+    layers: list[nn.Module] = []
+    for i, layer in enumerate(decoder.model):
+        layers.append(layer)
+        is_last_of_stage = isinstance(layer, SEANetResnetBlock) and not isinstance(
+            decoder.model[i + 1] if i + 1 < len(decoder.model) else None, SEANetResnetBlock
+        )
+        if not is_last_of_stage:
+            continue
+        dim = layer.block[1].conv.in_channels
+        compress = dim // layer.block[1].conv.out_channels
+        for j in range(have, n_residual_layers):
+            block = SEANetResnetBlock(dim, kernel_sizes=[kernel, 1], dilations=[2**j, 1], pad_mode=pad_mode, compress=compress)
+            nn.init.zeros_(block.block[-1].conv.weight)
+            nn.init.zeros_(block.block[-1].conv.bias)
+            device, dtype = layer.block[1].conv.weight.device, layer.block[1].conv.weight.dtype
+            layers.append(block.to(device=device, dtype=dtype))
+    decoder.model = nn.ModuleList(layers)
+    decoder.n_residual_layers = n_residual_layers
+    stamp_state_names(mimi)
+
+
 def load_decoder(mimi: MimiModel, path: Path) -> None:
-    """Replace the decode side of `mimi` with a fine-tuned one (file from `decoder_state`)."""
+    """Replace the decode side of `mimi` with a fine-tuned one (file from `decoder_state`).
+
+    A file from a decoder with more residual blocks per stage expands `mimi` to match first."""
     state = safetensors.torch.load_file(str(path))
+    last = max(int(name.split(".")[3]) for name in state if name.startswith("mimi.decoder.model."))
+    expand_residual_layers(mimi, (last + 1 - 3) // len(mimi.decoder.ratios) - 2)  # entries: 1 + stages * (2 + n) + 2
     own = mimi.state_dict()
     expected = {f"mimi.{module}.{name}" for module in DECODER_MODULES for name in getattr(mimi, module).state_dict()}
     assert set(state) == expected, f"{path}: not a decoder file ({len(set(state) ^ expected)} names differ)"
