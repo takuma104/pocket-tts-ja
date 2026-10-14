@@ -54,6 +54,7 @@ class HarmonicConfig:
     allowed_range: float  # pyworld.dio's
     fill_frames: int  # unvoiced gaps of up to this many 5 ms frames inside voicing are bridged
     refine: bool = False  # refine_f0_track on the waveform before the source is made
+    causal: bool = False  # the source looks at no later frame (harmonic_source(causal=True)); needed for streaming
 
     def metadata(self) -> dict[str, str]:
         return {"harmonic_config": json.dumps(asdict(self))}
@@ -64,7 +65,8 @@ class HarmonicConfig:
             return V1
         d = json.loads(metadata["harmonic_config"])
         return HarmonicConfig(
-            tuple(tuple(b) for b in d["bands"]), d["edge"], d["centered"], d["allowed_range"], d["fill_frames"], d.get("refine", False)
+            tuple(tuple(b) for b in d["bands"]), d["edge"], d["centered"], d["allowed_range"], d["fill_frames"],
+            d.get("refine", False), d.get("causal", False),
         )
 
 
@@ -80,7 +82,9 @@ V4 = HarmonicConfig(
     tuple(b for b in V2.bands if b[1] <= 7500.0) + ((7500.0, 8000.0),), V2.edge, V2.centered, V2.allowed_range, V2.fill_frames,
     refine=True,
 )
-CONFIGS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4}
+# V4 with a source that streams: the same in one call and in chunks
+V5 = HarmonicConfig(V4.bands, V4.edge, V4.centered, V4.allowed_range, V4.fill_frames, refine=True, causal=True)
+CONFIGS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4, "v5": V5}
 BANDS = V1.bands
 
 
@@ -156,37 +160,75 @@ def band_weight(freq: torch.Tensor, lo: float, hi: float, edge: float = 500.0, c
     return w * (freq < TOP)
 
 
+@dataclass
+class SourceState:
+    """What the causal source carries from one chunk to the next."""
+
+    phase: torch.Tensor  # [B] phase after the last sample, wrapped to [0, 2 pi)
+    f0: torch.Tensor  # [B] F0 of the last frame, unvoiced frames filled with the last voiced value
+    voiced: torch.Tensor  # [B] voicing of the last frame (0 or 1)
+
+    @staticmethod
+    def start(batch: int, device: torch.device, phase0: torch.Tensor | None = None) -> "SourceState":
+        phase = phase0.clone() if phase0 is not None else torch.zeros(batch, device=device)
+        return SourceState(phase, torch.full((batch,), 200.0, device=device), torch.zeros(batch, device=device))
+
+
 @torch.no_grad()
 def harmonic_source(
-    f0: torch.Tensor, hop: int, sample_rate: int, config: HarmonicConfig = V1, phase0: torch.Tensor | None = None
+    f0: torch.Tensor, hop: int, sample_rate: int, config: HarmonicConfig = V1, phase0: torch.Tensor | None = None,
+    state: SourceState | None = None,
 ) -> torch.Tensor:
     """[B, frames] F0 (Hz, 0 = unvoiced) -> [B, 2 * len(bands), frames * hop] band-limited harmonic sums.
 
     Channels: sin and cos sums of each band of `config`, each scaled to unit RMS whatever the number of
     harmonics in it. Through unvoiced stretches the phase keeps running at the nearest voiced F0
     and the source fades out and in over one frame, so a voicing change does not click.
+
+    With `config.causal` a sample depends on no later frame: unvoiced frames take the last voiced F0
+    (200 Hz before the first; the source is silent there anyway) and within frame n the F0 and the
+    voicing move linearly from frame n-1's value to frame n's. `state` (updated in place) carries
+    that and the phase into the next call, so decoding in chunks gives what one call gives.
     """
     bands, edge = config.bands, config.edge
     batch, frames = f0.shape
     voiced = (f0 > 0).float()
-    # F0 through the unvoiced stretches: the previous voiced value (or the next one at the start)
-    filled = f0.clone()
-    for b in range(batch):
-        idx = torch.nonzero(f0[b] > 0).flatten()
-        if len(idx) == 0:
-            filled[b] = 100.0
-            continue
-        pos = torch.arange(frames, device=f0.device)
-        nearest = torch.searchsorted(idx, pos, right=True) - 1
-        nearest = nearest.clamp(min=0)
-        filled[b] = f0[b, idx[nearest]]
     length = frames * hop
-    # sample-rate F0 and voicing by linear interpolation between frame values
-    f0_s = F.interpolate(filled[:, None], size=length, mode="linear", align_corners=False)[:, 0]
-    v_s = F.interpolate(voiced[:, None], size=length, mode="linear", align_corners=False)[:, 0]
-    phase = 2 * torch.pi * torch.cumsum(f0_s / sample_rate, dim=-1)
-    if phase0 is not None:
-        phase = phase + phase0[:, None]
+    if config.causal:
+        if state is None:
+            state = SourceState.start(batch, f0.device, phase0)
+        pos = torch.arange(frames, device=f0.device).expand(batch, frames)
+        last = torch.cummax(torch.where(f0 > 0, pos, torch.full_like(pos, -1)), dim=1).values
+        filled = torch.where(last >= 0, torch.gather(f0, 1, last.clamp(min=0)), state.f0[:, None])
+        prev_f0 = torch.cat([state.f0[:, None], filled[:, :-1]], dim=1)
+        prev_v = torch.cat([state.voiced[:, None], voiced[:, :-1]], dim=1)
+        w = (torch.arange(hop, device=f0.device, dtype=f0.dtype) + 1) / hop
+        f0_s = (prev_f0[..., None] * (1 - w) + filled[..., None] * w).flatten(1)
+        v_s = (prev_v[..., None] * (1 - w) + voiced[..., None] * w).flatten(1)
+        # in float64 and wrapped: a float32 sum over 1e5 samples drifts by a sizeable part of a radian,
+        # which the 30th harmonic multiplies by 30
+        phase64 = state.phase[:, None].double() + 2 * torch.pi * torch.cumsum(f0_s.double() / sample_rate, dim=-1)
+        phase = torch.remainder(phase64, 2 * torch.pi).float()
+        state.phase = phase[:, -1].clone()
+        state.f0, state.voiced = filled[:, -1].clone(), voiced[:, -1].clone()
+    else:
+        # F0 through the unvoiced stretches: the previous voiced value (or the next one at the start)
+        filled = f0.clone()
+        for b in range(batch):
+            idx = torch.nonzero(f0[b] > 0).flatten()
+            if len(idx) == 0:
+                filled[b] = 100.0
+                continue
+            pos1 = torch.arange(frames, device=f0.device)
+            nearest = torch.searchsorted(idx, pos1, right=True) - 1
+            nearest = nearest.clamp(min=0)
+            filled[b] = f0[b, idx[nearest]]
+        # sample-rate F0 and voicing by linear interpolation between frame values
+        f0_s = F.interpolate(filled[:, None], size=length, mode="linear", align_corners=False)[:, 0]
+        v_s = F.interpolate(voiced[:, None], size=length, mode="linear", align_corners=False)[:, 0]
+        phase = 2 * torch.pi * torch.cumsum(f0_s / sample_rate, dim=-1)
+        if phase0 is not None:
+            phase = phase + phase0[:, None]
     sums = torch.zeros(batch, 2 * len(bands), length, device=f0.device)
     norm = torch.zeros(batch, len(bands), length, device=f0.device)
     f_min, f_max = float(f0_s.min().clamp(min=F0_FLOOR)), float(f0_s.max())
@@ -224,14 +266,24 @@ class F0Head(nn.Module):
         self.convs = nn.ModuleList([nn.Conv1d(dim if i == 0 else hidden, hidden, kernel) for i in range(layers)])
         self.out = nn.Conv1d(hidden, (N_BINS if classify else 1) + 1, 1)
 
-    def forward(self, emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, emb: torch.Tensor, cache: list[torch.Tensor] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """`cache` (one tensor per convolution, updated in place): the last kernel - 1 input frames of
+        the previous chunk, for decoding in chunks; without it the past is zeros."""
         x = emb
-        for conv in self.convs:
-            x = F.gelu(conv(F.pad(x, (self.kernel - 1, 0))))
+        for i, conv in enumerate(self.convs):
+            if cache is not None:
+                padded = torch.cat([cache[i], x], dim=-1)
+                cache[i] = padded[..., -(self.kernel - 1) :].detach()
+            else:
+                padded = F.pad(x, (self.kernel - 1, 0))
+            x = F.gelu(conv(padded))
         y = self.out(x)
         if self.classify:
             return y[:, :-1], y[:, -1]  # [B, bins, frames]
         return y[:, 0] + 8.0, y[:, 1]  # log2 F0 around 256 Hz
+
+    def start_cache(self, batch: int, device: torch.device) -> list[torch.Tensor]:
+        return [torch.zeros(batch, conv.in_channels, self.kernel - 1, device=device) for conv in self.convs]
 
     def f0(self, emb: torch.Tensor) -> torch.Tensor:
         """[B, dim, frames] -> F0 in Hz, 0 where the head says unvoiced."""
@@ -284,13 +336,15 @@ class HarmonicHead(nn.Module):
         nn.init.zeros_(self.gain.bias)
         self.f0 = f0
 
-    def forward(self, emb: torch.Tensor, source: torch.Tensor) -> torch.Tensor:
+    def forward(self, emb: torch.Tensor, source: torch.Tensor, prev_gain: torch.Tensor | None = None) -> torch.Tensor:
         """emb [B, dim, frames], source [B, channels, frames * hop] -> [B, 1, frames * hop].
 
         The gain moves linearly from the previous frame's value to this frame's over the frame
-        (causal: a frame's samples depend on that frame and the one before)."""
+        (causal: a frame's samples depend on that frame and the one before). `prev_gain` [B, channels, 1]:
+        the last frame's gain of the previous chunk (default: the first frame's own)."""
         g = self.gain(emb)
-        prev = torch.cat([g[..., :1], g[..., :-1]], dim=-1)
+        first = prev_gain if prev_gain is not None else g[..., :1]
+        prev = torch.cat([first, g[..., :-1]], dim=-1)
         w = (torch.arange(self.hop, device=g.device, dtype=g.dtype) + 1) / self.hop
         g_s = (prev[..., None] * (1 - w) + g[..., None] * w).flatten(-2)
         return (g_s * source).sum(dim=1, keepdim=True)
@@ -328,6 +382,31 @@ def decode_harmonic(
             source = harmonic_source(hz * (voicing > 0), head.hop, mimi.sample_rate, config, phase0)
     harm = head(emb, source[..., : out.shape[-1]])
     return (out, harm) if parts else out + harm
+
+
+class HarmonicStream:
+    """The harmonic part for decoding in chunks: feed it the decoder transformer's output of each
+    chunk in order (the F0 comes from the head's F0 head). It carries the source's phase and last
+    F0 / voicing, the last gain and the F0 head's convolution context, so the chunks join exactly
+    as one call would decode them (config.causal must be set)."""
+
+    def __init__(self, head: HarmonicHead, config: HarmonicConfig, sample_rate: int, batch: int, device: torch.device) -> None:
+        assert head.f0 is not None and config.causal
+        self.head, self.config, self.sample_rate = head, config, sample_rate
+        self.source = SourceState.start(batch, device)
+        self.cache = head.f0.start_cache(batch, device)
+        self.gain: torch.Tensor | None = None
+
+    @torch.no_grad()
+    def __call__(self, emb: torch.Tensor) -> torch.Tensor:
+        """[B, dim, frames] -> [B, 1, frames * hop]"""
+        assert self.head.f0 is not None
+        raw, voicing = self.head.f0(emb, self.cache)
+        hz = (decode_bins(raw) if self.head.f0.classify else 2**raw) * (voicing > 0)
+        source = harmonic_source(hz, self.head.hop, self.sample_rate, self.config, state=self.source)
+        out = self.head(emb, source, self.gain)
+        self.gain = self.head.gain(emb[..., -1:])
+        return out
 
 
 PREFIX = "mimi.harmonic."

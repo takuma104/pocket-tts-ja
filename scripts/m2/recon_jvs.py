@@ -23,6 +23,7 @@ Directories that already hold every clip are skipped. A decoder file with a harm
 """
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 
@@ -47,6 +48,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("exp/m2/recon"))
     parser.add_argument("--per-gender", type=int, default=5)
     parser.add_argument("--decoder", action="append", default=[], help="NAME=decoder file (safetensors)")
+    parser.add_argument("--harmonic-causal", action="store_true",
+                        help="decode harmonic decoders with the causal (streamable) source whatever they were trained with")
     args = parser.parse_args()
 
     genders = read_genders(args.jvs_root)
@@ -93,6 +96,8 @@ def main() -> None:
             loaded = load_harmonic_head(path, mimi.decoder.dimension, hop, device)
             if loaded is not None:
                 head, config = loaded
+                if args.harmonic_causal:
+                    config = dataclasses.replace(config, causal=True)
         for it in items:
             key = it["key"]
             if name == "orig":
