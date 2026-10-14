@@ -1,0 +1,51 @@
+# B-CC on mix v6 (scripts/make_bcc_mix.py): mix v5 plus the re-synthesis of s3 with CC BY voices
+# (s3_cc, 110,885 of 141,258 clips passed the QC, 205.8 h). s3 has 274.9 h now (69.0 h before,
+# each clip 2.44 times; 0.61 times now); the shares do not change: 1,402.3 h, synthetic 32.0%.
+# All sentences that had an NC voice are re-synthesized now. Takes runs/BCC_4k over through
+# runs/BCC_4k/next_config (scripts/run_train.sh).
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v6.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+run_dir: runs/BCC_4k
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 600000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
