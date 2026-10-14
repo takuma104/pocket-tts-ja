@@ -18,7 +18,8 @@ decoder:
         pilot5k=exp/m2/recon/asr_pilot5k/kana.jsonl
 
 Directories that already hold every clip are skipped. A decoder file with a harmonic head
-(pocket_tts_ja.harmonic, trained with --harmonic oracle) is driven by the recording's F0.
+(pocket_tts_ja.harmonic) is driven by the recording's F0 (--harmonic oracle) or by its own F0 head
+(--harmonic predicted).
 """
 
 import argparse
@@ -96,6 +97,10 @@ def main() -> None:
             key = it["key"]
             if name == "orig":
                 wav = waves[key]
+            elif head is not None and head.f0 is not None:  # the decoder's own F0: no recording needed
+                with torch.no_grad():
+                    out = decode_harmonic(mimi, head, latents[key][None], 0, None, config=config)
+                wav = out[0, 0, : len(waves[key])].float().cpu().numpy()
             elif head is not None:
                 lat = latents[key]
                 f0 = f0_track(waves[key], sample_rate, lat.shape[0] * 16, config.allowed_range, config.fill_frames)

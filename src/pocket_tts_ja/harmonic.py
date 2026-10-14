@@ -207,15 +207,82 @@ def harmonic_source(
     return sums * scale * v_s[:, None]
 
 
-class HarmonicHead(nn.Module):
-    """Per-frame gains of the source channels from the decoder transformer's output."""
+BIN_CENTS = 10.0
+F0_LO, F0_HI = 50.0, 800.0
+N_BINS = int(1200 * np.log2(F0_HI / F0_LO) / BIN_CENTS) + 1
 
-    def __init__(self, dim: int, channels: int, hop: int) -> None:
+
+class F0Head(nn.Module):
+    """Causal convolutions on the decoder transformer's output -> per frame either (log2 F0, voicing
+    logit) or, with `classify`, (logits over log-F0 bins BIN_CENTS wide from F0_LO, voicing logit).
+    Classifying (as CREPE does) avoids the regression's landing between octave candidates."""
+
+    def __init__(self, dim: int = 512, hidden: int = 256, kernel: int = 3, layers: int = 3, classify: bool = False) -> None:
+        super().__init__()
+        self.kernel = kernel
+        self.classify = classify
+        self.convs = nn.ModuleList([nn.Conv1d(dim if i == 0 else hidden, hidden, kernel) for i in range(layers)])
+        self.out = nn.Conv1d(hidden, (N_BINS if classify else 1) + 1, 1)
+
+    def forward(self, emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = emb
+        for conv in self.convs:
+            x = F.gelu(conv(F.pad(x, (self.kernel - 1, 0))))
+        y = self.out(x)
+        if self.classify:
+            return y[:, :-1], y[:, -1]  # [B, bins, frames]
+        return y[:, 0] + 8.0, y[:, 1]  # log2 F0 around 256 Hz
+
+    def f0(self, emb: torch.Tensor) -> torch.Tensor:
+        """[B, dim, frames] -> F0 in Hz, 0 where the head says unvoiced."""
+        out, voicing = self(emb)
+        hz = decode_bins(out) if self.classify else 2**out
+        return hz * (voicing > 0)
+
+    @staticmethod
+    def from_state(state: dict[str, torch.Tensor]) -> "F0Head":
+        convs = sorted({int(k.split(".")[1]) for k in state if k.startswith("convs.")})
+        hidden, dim, kernel = state["convs.0.weight"].shape
+        head = F0Head(dim, hidden, kernel, len(convs), classify=state["out.weight"].shape[0] == N_BINS + 1)
+        head.load_state_dict(state)
+        return head
+
+
+def bin_cents(device: torch.device | None = None) -> torch.Tensor:
+    return torch.arange(N_BINS, dtype=torch.float32, device=device) * BIN_CENTS  # cents above F0_LO
+
+
+def decode_bins(logits: torch.Tensor, width: int = 4) -> torch.Tensor:
+    """[B, bins, frames] -> F0 in Hz: the probability-weighted mean of the bins within `width` of the best."""
+    prob = torch.sigmoid(logits)
+    best = prob.argmax(1, keepdim=True)
+    idx = (best + torch.arange(-width, width + 1, device=logits.device)[None, :, None]).clamp(0, N_BINS - 1)
+    p = torch.gather(prob, 1, idx)
+    cents = (idx.float() * BIN_CENTS * p).sum(1) / p.sum(1).clamp(min=1e-6)
+    return F0_LO * 2 ** (cents / 1200)
+
+
+def f0_loss(out: torch.Tensor, voicing: torch.Tensor, target: torch.Tensor, blur_cents: float = 25.0) -> torch.Tensor:
+    """F0Head (classify) outputs against a target F0 track [B, frames] (0 = unvoiced): binary
+    cross-entropy against bins blurred over `blur_cents` in the voiced frames, plus the voicing's."""
+    voiced = target > 0
+    target_c = 1200 * torch.log2(target.clamp(min=F0_LO) / F0_LO)
+    soft = torch.exp(-0.5 * ((bin_cents(out.device)[None, :, None] - target_c[:, None]) / blur_cents) ** 2)
+    bce = F.binary_cross_entropy_with_logits(out, soft, reduction="none").mean(1)
+    return (bce * voiced).sum() / voiced.sum().clamp(min=1) * 10 + F.binary_cross_entropy_with_logits(voicing, voiced.float())
+
+
+class HarmonicHead(nn.Module):
+    """Per-frame gains of the source channels from the decoder transformer's output, and optionally
+    the F0 head that drives the source (without it the F0 is given, e.g. the recording's)."""
+
+    def __init__(self, dim: int, channels: int, hop: int, f0: F0Head | None = None) -> None:
         super().__init__()
         self.hop = hop
         self.gain = nn.Conv1d(dim, channels, 1)
         nn.init.zeros_(self.gain.weight)
         nn.init.zeros_(self.gain.bias)
+        self.f0 = f0
 
     def forward(self, emb: torch.Tensor, source: torch.Tensor) -> torch.Tensor:
         """emb [B, dim, frames], source [B, channels, frames * hop] -> [B, 1, frames * hop].
@@ -230,12 +297,17 @@ class HarmonicHead(nn.Module):
 
 
 def decode_harmonic(
-    mimi: MimiModel, head: HarmonicHead, latents: torch.Tensor, start: int, source: torch.Tensor, context_frames: int = 8,
-    parts: bool = False,
+    mimi: MimiModel, head: HarmonicHead, latents: torch.Tensor, start: int, source: torch.Tensor | None,
+    context_frames: int = 8, parts: bool = False, config: HarmonicConfig | None = None, phase0: torch.Tensor | None = None,
+    f0_outputs: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """codec_ft.decode_window plus the harmonic part: [B, T, 32] latents from the start of a clip,
     source for the decoded window ([B, C, (T - start) * frame]) -> [B, 1, (T - start) * frame]
-    (with `parts`: the decoder's own output and the harmonic part, separately)."""
+    (with `parts`: the decoder's own output and the harmonic part, separately).
+
+    With `source` None the head's F0 head predicts the F0 from the decoder transformer's output and
+    the source is made from it with `config` (no recording needed: what a TTS can run). Its raw
+    outputs are appended to `f0_outputs` for a loss."""
     ratio = round(mimi.encoder_frame_rate / mimi.frame_rate)
     state = init_states(mimi, latents.shape[0], (latents.shape[1] + context_frames) * ratio)
     if start > 0:
@@ -246,6 +318,14 @@ def decode_harmonic(
     emb = mimi._to_encoder_framerate(latent, state)
     (emb,) = mimi.decoder_transformer(emb, state)
     out = mimi.decoder(emb, state)
+    if source is None:
+        assert head.f0 is not None and config is not None
+        raw, voicing = head.f0(emb)
+        if f0_outputs is not None:
+            f0_outputs.append((raw, voicing))
+        with torch.no_grad():
+            hz = decode_bins(raw) if head.f0.classify else 2**raw
+            source = harmonic_source(hz * (voicing > 0), head.hop, mimi.sample_rate, config, phase0)
     harm = head(emb, source[..., : out.shape[-1]])
     return (out, harm) if parts else out + harm
 
@@ -268,7 +348,8 @@ def load_harmonic_head(path: Path, dim: int, hop: int, device: torch.device) -> 
         return None
     with safetensors.safe_open(str(path), framework="pt") as f:
         config = HarmonicConfig.from_metadata(f.metadata())
-    head = HarmonicHead(dim, state["gain.weight"].shape[0], hop)
+    f0_state = {k.removeprefix("f0."): v for k, v in state.items() if k.startswith("f0.")}
+    head = HarmonicHead(dim, state["gain.weight"].shape[0], hop, F0Head.from_state(f0_state) if f0_state else None)
     head.load_state_dict(state)
     assert head.gain.out_channels == 2 * len(config.bands), (head.gain.out_channels, config)
     return head.to(device).eval(), config

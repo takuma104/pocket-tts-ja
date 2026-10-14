@@ -69,11 +69,13 @@ from pocket_tts_ja.codec_ft import (
 )
 from pocket_tts_ja.harmonic import (
     CONFIGS,
+    F0Head,
     HarmonicConfig,
     HarmonicHead,
     decode_harmonic,
     f0_track,
     harmonic_source,
+    f0_loss,
     head_state,
     refine_f0_track,
 )
@@ -278,7 +280,9 @@ def validate(
         for i, clip in enumerate(clips):
             wav = clip.to(device)[None, None]
             latents = mimi.encode_to_latent(wav)
-            if head is not None and f0s is not None:
+            if head is not None and head.f0 is not None:  # predicted F0: what a TTS can run
+                fake = decode_harmonic(mimi, head, latents, 0, None, config=harmonic)[..., : wav.shape[-1]]
+            elif head is not None and f0s is not None:
                 hop = round(mimi.sample_rate / mimi.encoder_frame_rate)
                 f0 = f0s[name][i][None].to(device)
                 if harmonic is not None and harmonic.refine:
@@ -330,8 +334,11 @@ def main() -> None:
     parser.add_argument("--init", type=Path, default=None, help="decoder weights to start from (default: stock)")
     parser.add_argument("--init-disc", type=Path, default=None,
                         help="checkpoint.pt of another run whose discriminators to start from (new run only)")
-    parser.add_argument("--harmonic", choices=("none", "oracle"), default="none",
-                        help="oracle: add pocket_tts_ja.harmonic's source, driven by the recording's F0 (diagnostic)")
+    parser.add_argument("--harmonic", choices=("none", "oracle", "predicted"), default="none",
+                        help="add pocket_tts_ja.harmonic's source, driven by the recording's F0 (oracle: diagnostic) or by "
+                             "an F0 head on the decoder transformer's output (predicted, trained along with --w-f0)")
+    parser.add_argument("--f0-init", type=Path, default=None, help="with --harmonic predicted: F0Head weights (f0_probe.py)")
+    parser.add_argument("--w-f0", type=float, default=1.0, help="weight of the F0 head's loss (harmonic.f0_loss)")
     parser.add_argument("--harmonic-config", choices=sorted(CONFIGS), default="v1", help="bands and F0 settings of the source")
     parser.add_argument("--noise-stock", type=float, default=0.0,
                         help="with --harmonic: weight of a mel loss above --high-cross between the decoder's own output "
@@ -374,12 +381,18 @@ def main() -> None:
     sample_rate, frame = mimi.sample_rate, mimi.frame_size
     needs_stock = (args.high_cross > 0 and args.high_mode != "fine") or args.noise_stock > 0
     stock = load_mimi(load_pocket_config(), device) if needs_stock else None
-    harmonic = CONFIGS[args.harmonic_config] if args.harmonic == "oracle" else None
+    harmonic = CONFIGS[args.harmonic_config] if args.harmonic != "none" else None
     if args.init is not None:
         load_decoder(mimi, args.init)
     expand_residual_layers(mimi, args.residual_layers)
     hop = round(sample_rate / mimi.encoder_frame_rate)
-    head = HarmonicHead(mimi.decoder.dimension, 2 * len(harmonic.bands), hop).to(device) if harmonic is not None else None
+    head = None
+    if harmonic is not None:
+        f0_head = None
+        if args.harmonic == "predicted":
+            assert args.f0_init is not None, "--harmonic predicted needs --f0-init"
+            f0_head = F0Head.from_state(torch.load(args.f0_init, map_location="cpu", weights_only=True))
+        head = HarmonicHead(mimi.decoder.dimension, 2 * len(harmonic.bands), hop, f0_head).to(device)
     named = trainable(mimi, head)
     params = [param for _, param in named]
     for param in params:
@@ -546,8 +559,14 @@ def main() -> None:
                 f0 = f0.to(device)
                 if harmonic.refine:
                     f0 = refine_f0_track(wav[:, 0, start * frame :], f0, hop, sample_rate)
-                source = harmonic_source(f0, hop, sample_rate, harmonic, phase0=phase0)
-                own, harm = decode_harmonic(mimi, head, latents, start, source, parts=True)
+                f0_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+                if head.f0 is not None:  # the recording's F0 is only the F0 head's target
+                    own, harm = decode_harmonic(
+                        mimi, head, latents, start, None, parts=True, config=harmonic, phase0=phase0, f0_outputs=f0_outputs
+                    )
+                else:
+                    source = harmonic_source(f0, hop, sample_rate, harmonic, phase0=phase0)
+                    own, harm = decode_harmonic(mimi, head, latents, start, source, parts=True)
                 own, harm = own[..., : real.shape[-1]], harm[..., : real.shape[-1]]
                 fake = own + harm
             else:
@@ -587,6 +606,10 @@ def main() -> None:
                     high = high_loss(fake, real, kept) if args.high_mode == "voicing" else high_loss(fake, kept)
                 loss_g = loss_g + args.w_high * high
                 stats["high"] = float(high.detach())
+            if head is not None and head.f0 is not None:
+                loss_f0 = f0_loss(*f0_outputs[0], f0[..., : f0_outputs[0][0].shape[-1]])
+                loss_g = loss_g + args.w_f0 * loss_f0
+                stats["f0"] = float(loss_f0.detach())
             if noise_loss is not None:
                 assert kept is not None
                 noise = noise_loss(own, real, kept) if isinstance(noise_loss, VoicingBlendMelLoss) else noise_loss(own, kept)

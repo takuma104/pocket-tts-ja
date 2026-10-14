@@ -36,7 +36,7 @@ from torch import nn
 
 from pocket_tts.modules.stateful_module import init_states
 from pocket_tts_ja.codec_ft import load_decoder
-from pocket_tts_ja.harmonic import V3, f0_track, refine_f0_track
+from pocket_tts_ja.harmonic import F0_LO, V3, F0Head, bin_cents, decode_bins, f0_track, refine_f0_track
 from pocket_tts_ja.mimi_utils import load_mimi, load_pocket_config, to_mono_float
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,46 +48,6 @@ SOURCES = {
     "hfc_m": "data/m2/hfc_m",
     "jvnv": "data/m2/jvnv",
 }
-
-
-BIN_CENTS = 10.0
-F0_LO, F0_HI = 50.0, 800.0
-N_BINS = int(1200 * np.log2(F0_HI / F0_LO) / BIN_CENTS) + 1
-
-
-class F0Head(nn.Module):
-    """Causal convolutions on the decoder transformer's output -> per frame either (log2 F0, voicing
-    logit) or (bin logits, voicing logit)."""
-
-    def __init__(self, dim: int = 512, hidden: int = 256, kernel: int = 3, layers: int = 3, classify: bool = False) -> None:
-        super().__init__()
-        self.kernel = kernel
-        self.classify = classify
-        self.convs = nn.ModuleList([nn.Conv1d(dim if i == 0 else hidden, hidden, kernel) for i in range(layers)])
-        self.out = nn.Conv1d(hidden, (N_BINS if classify else 1) + 1, 1)
-
-    def forward(self, emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = emb
-        for conv in self.convs:
-            x = F.gelu(conv(F.pad(x, (self.kernel - 1, 0))))
-        y = self.out(x)
-        if self.classify:
-            return y[:, :-1], y[:, -1]  # [B, bins, frames]
-        return y[:, 0] + 8.0, y[:, 1]  # log2 F0 around 256 Hz
-
-
-def bin_cents() -> torch.Tensor:
-    return torch.arange(N_BINS, dtype=torch.float32) * BIN_CENTS  # cents above F0_LO
-
-
-def decode_bins(logits: torch.Tensor, width: int = 4) -> torch.Tensor:
-    """[B, bins, frames] -> F0 in Hz: the probability-weighted mean of the bins within `width` of the best."""
-    prob = torch.sigmoid(logits)
-    best = prob.argmax(1, keepdim=True)
-    idx = (best + torch.arange(-width, width + 1, device=logits.device)[None, :, None]).clamp(0, N_BINS - 1)
-    p = torch.gather(prob, 1, idx)
-    cents = (idx.float() * BIN_CENTS * p).sum(1) / p.sum(1).clamp(min=1e-6)
-    return F0_LO * 2 ** (cents / 1200)
 
 
 @torch.no_grad()
