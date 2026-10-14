@@ -19,6 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import soundfile as sf
+from hf_structure import HOP, voiced_f0
 from periodicity import unvoiced_consonants
 
 REMOTE_REPO = "~/co/pocket-tts-ja"
@@ -33,6 +34,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--sentences", type=int, default=3, help="per speaker")
     parser.add_argument("--title", default="M2: decoders on the same latents (JVS reconstruction)")
+    parser.add_argument("--rank", choices=("unvoiced", "voiced"), default="unvoiced",
+                        help="pick the sentences with the largest share of unvoiced-consonant frames (the periodic "
+                             "noise) or of voiced frames (the harmonics of the high band)")
     args = parser.parse_args()
 
     audio = args.out / "audio"
@@ -47,7 +51,11 @@ def main() -> None:
     by_speaker: dict[str, list[tuple[float, dict]]] = defaultdict(list)
     for it in items:
         x, _ = sf.read(str(orig / f"{it['key']}.wav"), dtype="float32")
-        by_speaker[it["speaker"]].append((float(unvoiced_consonants(x).mean()), it))
+        if args.rank == "voiced":
+            share = len(voiced_f0(x, 24000)) * HOP / max(len(x), 1)
+        else:
+            share = float(unvoiced_consonants(x).mean())
+        by_speaker[it["speaker"]].append((share, it))
 
     gender = {it["speaker"]: it["gender"] for it in items}
     speakers = sorted(by_speaker, key=lambda s: (gender[s] != "F", s))  # women first: the noise was worst there
@@ -58,7 +66,8 @@ def main() -> None:
     for spk in order:
         rows.append(f"<tr><td class='spk' colspan='{len(args.names) + 1}'>{spk} ({gender[spk]})</td></tr>")
         for share, it in sorted(by_speaker[spk], key=lambda p: -p[0])[: args.sentences]:
-            cells = [f"<td class='text'>{html.escape(it['text'])}<br><small>無声子音のフレーム {100 * share:.0f}%</small></td>"]
+            kind = "有声" if args.rank == "voiced" else "無声子音"
+            cells = [f"<td class='text'>{html.escape(it['text'])}<br><small>{kind}のフレーム {100 * share:.0f}%</small></td>"]
             for name in args.names:
                 dst = audio / f"{name}_{it['key']}.wav"
                 if not dst.exists():

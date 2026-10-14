@@ -31,7 +31,7 @@ import soundfile as sf
 import torch
 
 from pocket_tts_ja.codec_ft import load_decoder
-from pocket_tts_ja.harmonic import decode_harmonic, f0_track, harmonic_source, load_harmonic_head
+from pocket_tts_ja.harmonic import decode_harmonic, f0_track, harmonic_source, load_harmonic_head, refine_f0_track
 from pocket_tts_ja.jvs import read_genders
 from pocket_tts_ja.mimi_utils import decode, encode, load_mimi, load_pocket_config, to_mono_float
 
@@ -89,16 +89,21 @@ def main() -> None:
             mimi = load_mimi(load_pocket_config(), device)
             load_decoder(mimi, path)
             hop = round(sample_rate / mimi.encoder_frame_rate)
-            head = load_harmonic_head(path, mimi.decoder.dimension, hop, device)
+            loaded = load_harmonic_head(path, mimi.decoder.dimension, hop, device)
+            if loaded is not None:
+                head, config = loaded
         for it in items:
             key = it["key"]
             if name == "orig":
                 wav = waves[key]
             elif head is not None:
                 lat = latents[key]
-                f0 = torch.from_numpy(f0_track(waves[key], sample_rate, lat.shape[0] * 16))[None].to(device)
+                f0 = f0_track(waves[key], sample_rate, lat.shape[0] * 16, config.allowed_range, config.fill_frames)
+                f0_t = torch.from_numpy(f0)[None].to(device)
+                if config.refine:
+                    f0_t = refine_f0_track(torch.from_numpy(waves[key])[None].to(device), f0_t, hop, sample_rate)
                 with torch.no_grad():
-                    out = decode_harmonic(mimi, head, lat[None], 0, harmonic_source(f0, hop, sample_rate))
+                    out = decode_harmonic(mimi, head, lat[None], 0, harmonic_source(f0_t, hop, sample_rate, config))
                 wav = out[0, 0, : len(waves[key])].float().cpu().numpy()
             else:
                 wav = decode(mimi, latents[key], len(waves[key])).float().cpu().numpy()
