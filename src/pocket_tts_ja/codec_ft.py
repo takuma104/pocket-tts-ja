@@ -300,6 +300,11 @@ class GridModulationLoss(nn.Module):
     arbitrary), folded on `period` samples, averaged over the batch (what differs between clips
     cancels, the grid's pattern stays), the mean over positions removed; the mean square of what
     is left. The training windows start on frame boundaries, so the grid is the same in a batch.
+
+    With `latent_frames` > 0 the same is done one level up: the envelope's means over the 5 ms
+    frames (which removes the pattern above), over their 160 ms mean, folded on the 16 frames of
+    an 80 ms latent frame. The upsampling from the 12.5 Hz latents leaves a pattern there too
+    (4-8 kHz: 4-7% against the recordings' 0.6%, also 2.5-3% at 1-4 kHz): a 12.5 Hz flutter.
     """
 
     def __init__(
@@ -307,11 +312,32 @@ class GridModulationLoss(nn.Module):
         sample_rate: int,
         period: int = 120,
         bands: tuple[tuple[float, float], ...] = ((2000.0, 4000.0), (4000.0, 6000.0), (6000.0, 8000.0), (8000.0, 11000.0)),
+        latent_frames: int = 0,
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
         self.period = period
         self.bands = bands
+        self.latent_frames = latent_frames
+
+    @staticmethod
+    def folded(rel: torch.Tensor, weight: torch.Tensor, period: int) -> torch.Tensor:
+        """Mean square of the batch's weighted mean profile on `period`, its mean removed."""
+        batch = rel.shape[0]
+        fold = (rel * weight).view(batch, -1, period).sum(1) / weight.view(batch, -1, period).sum(1).clamp(min=1e-6)
+        profile = fold.mean(0)
+        return (profile - profile.mean()).pow(2).mean()
+
+    @staticmethod
+    def relative(env: torch.Tensor, ref: torch.Tensor, span: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """env over its moving mean of `span` - 1, and the recording's moving mean as the weight
+        (zero within `span` of the ends, where the FFT band-pass wraps around)."""
+        n = env.shape[-1]
+        mean = F.avg_pool1d(env[:, None], span + 1, 1, span // 2, count_include_pad=False)[:, 0, :n]
+        weight = F.avg_pool1d(ref[:, None], span + 1, 1, span // 2, count_include_pad=False)[:, 0, :n].clone()
+        weight[:, :span] = 0
+        weight[:, -span:] = 0
+        return env / (mean + 1e-6) - 1, weight / (weight.mean(dim=-1, keepdim=True) + 1e-9)
 
     def envelopes(self, wav: torch.Tensor) -> list[torch.Tensor]:
         """[B, T] -> per band [B, T] Hilbert envelope (FFT band-pass, one-sided spectrum doubled)."""
@@ -322,22 +348,20 @@ class GridModulationLoss(nn.Module):
 
     def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
         """fake, real: [B, 1, T] waveforms whose sample 0 is on the decoder's frame grid."""
-        n = fake.shape[-1] // self.period * self.period
+        unit = self.period * max(self.latent_frames, 1)
+        n = fake.shape[-1] // unit * unit
         fake, real = fake[:, 0, :n], real[:, 0, :n]
-        smooth = 2 * self.period
         total = fake.new_zeros(())
         with torch.no_grad():
             real_env = self.envelopes(real)
         for env, ref in zip(self.envelopes(fake), real_env, strict=True):
-            mean = F.avg_pool1d(env[:, None], smooth, 1, smooth // 2, count_include_pad=False)[:, 0, :n]
-            rel = env / (mean + 1e-6) - 1
-            weight = F.avg_pool1d(ref[:, None], smooth, 1, smooth // 2, count_include_pad=False)[:, 0, :n]
-            weight[:, :smooth] = 0  # the FFT band-pass wraps around at the window's ends
-            weight[:, -smooth:] = 0
-            weight = weight / (weight.mean(dim=-1, keepdim=True) + 1e-9)
-            fold = (rel * weight).view(fake.shape[0], -1, self.period).sum(1) / weight.view(fake.shape[0], -1, self.period).sum(1).clamp(min=1e-6)
-            profile = fold.mean(0)
-            total = total + (profile - profile.mean()).pow(2).mean()
+            rel, weight = self.relative(env, ref, 2 * self.period)
+            total = total + self.folded(rel, weight, self.period)
+            if self.latent_frames > 0:
+                frames = env.view(env.shape[0], -1, self.period).mean(-1)
+                ref_frames = ref.view(ref.shape[0], -1, self.period).mean(-1)
+                rel, weight = self.relative(frames, ref_frames, 2 * self.latent_frames)
+                total = total + self.folded(rel, weight, self.latent_frames)
         return total
 
 
