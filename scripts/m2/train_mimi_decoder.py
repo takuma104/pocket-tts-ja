@@ -58,6 +58,7 @@ from pocket_tts_ja.codec_ft import (
     HighBandWaveLoss,
     MultiScaleMelLoss,
     SharedSpectrumLoss,
+    SubsonicLoss,
     VoicingBlendMelLoss,
     decode_window,
     decoder_named_parameters,
@@ -303,6 +304,7 @@ def validate(
         real_t = torch.from_numpy(np.stack([r[:n] for r in refs]))[:, None].to(device)
         out[f"grid_{name}"] = float(grid_loss(fake_t, real_t))
         out[f"gridL_{name}"] = float(grid_latent_loss(fake_t, real_t))
+        out[f"sub_{name}"] = float(SubsonicLoss(mimi.sample_rate)(fake_t, real_t))
         out |= {f"{key}_{name}": value for key, value in high_band_structure(refs, fakes, mimi.sample_rate).items()}
     return out
 
@@ -332,6 +334,8 @@ def main() -> None:
                         help="band of that loss in Hz; a tone moves to just outside it if it can")
     parser.add_argument("--w-grid", type=float, default=0.0,
                         help="weight of the loss on high-band amplitude modulation locked to the 5 ms frame grid")
+    parser.add_argument("--w-sub", type=float, default=0.0,
+                        help="weight of the loss on content below 40 Hz that the recording does not have (SubsonicLoss)")
     parser.add_argument("--grid-latent", action="store_true",
                         help="that loss also folds on the 80 ms latent frame (the 12.5 Hz upsampling)")
     parser.add_argument("--high-cross", type=float, default=0.0,
@@ -436,6 +440,7 @@ def main() -> None:
         else:
             noise_loss = MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross).to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
+    sub_loss = SubsonicLoss(sample_rate)
     grid_loss = GridModulationLoss(sample_rate, latent_frames=round(mimi.encoder_frame_rate / mimi.frame_rate) if args.grid_latent else 0)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
@@ -636,6 +641,10 @@ def main() -> None:
                 grid = grid_loss(fake, real)
                 loss_g = loss_g + args.w_grid * grid
                 stats["grid"] = float(grid.detach())
+            if args.w_sub > 0:
+                sub = sub_loss(fake, real)
+                loss_g = loss_g + args.w_sub * sub
+                stats["sub"] = float(sub.detach())
             if disc is not None:
                 with torch.no_grad():
                     d_real = disc(real_seg)

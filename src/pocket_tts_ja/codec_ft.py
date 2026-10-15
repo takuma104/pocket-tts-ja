@@ -365,6 +365,37 @@ class GridModulationLoss(nn.Module):
         return total
 
 
+class SubsonicLoss(nn.Module):
+    """Content below `cutoff` that the recording does not have.
+
+    The decoders put a slow wander under the waveform, at the latent rate and its multiples
+    (12.5 / 25 Hz; mostly below 40 Hz), 41-48 dB under the signal against the recordings' 55 dB.
+    The mel loss hardly sees it (a few bins at the bottom of the largest STFT). Inaudible as such,
+    but UTMOSv2 marks the decoders down by about 0.3 for it, and it costs headroom. Per clip: the
+    power of the output below `cutoff` over the recording's, in dB, with a floor at -60 dB of the
+    recording's power; only an excess counts (squared, in units of 10 dB).
+    """
+
+    def __init__(self, sample_rate: int, cutoff: float = 40.0, floor_db: float = -60.0) -> None:
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.cutoff = cutoff
+        self.floor = 10 ** (floor_db / 10)
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        """fake, real: [B, 1, T]."""
+        n = fake.shape[-1]
+        freq = torch.fft.rfftfreq(n, 1 / self.sample_rate, device=fake.device)
+        low = freq < self.cutoff
+        f_spec = torch.fft.rfft(fake[:, 0].float()).abs().pow(2)
+        with torch.no_grad():
+            r_spec = torch.fft.rfft(real[:, 0].float()).abs().pow(2)
+            floor = self.floor * r_spec.sum(-1)
+            r_low = r_spec[:, low].sum(-1) + floor
+        excess = 10 * torch.log10((f_spec[:, low].sum(-1) + floor) / r_low)
+        return (F.relu(excess) / 10).pow(2).mean()
+
+
 class PeriodDiscriminator(nn.Module):
     def __init__(self, period: int, channels: tuple[int, ...] = (32, 128, 256, 512, 512)) -> None:
         super().__init__()

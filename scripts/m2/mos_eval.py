@@ -9,6 +9,11 @@ different decoders. Each directory's scores are cached in <root>/mos_<name>.json
 UTMOS22 strong (SpeechMOS, torch.hub) sees the whole utterance at 16 kHz. UTMOSv2 (fusion_stage3,
 fold 0) sees a wav2vec 2.0 branch at 16 kHz and mel spectrograms of random crops; its "sarulab"
 domain (the default) is used, and the crops are seeded so reruns agree.
+
+--highpass HZ filters every file first (zero phase, 4th order): UTMOSv2 punishes the decoders'
+content below 40 Hz (slow wander, -34 dB under the speech band, not a DC offset) by about 0.3,
+more than anything audible between them; the recordings lose 0.09 by the same filter. Scores
+with it are cached as mos_hp<HZ>_<name>.json.
 """
 
 import argparse
@@ -27,14 +32,18 @@ import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 import torch  # noqa: E402
 import torchaudio.functional as AF  # noqa: E402
+from scipy.signal import butter, sosfiltfilt  # noqa: E402
 
 SR = 16000
 
 
-def load_16k(path: Path) -> torch.Tensor:
-    wav, sr = sf.read(path, dtype="float32", always_2d=True)
-    wav = torch.from_numpy(wav.mean(1))
-    return AF.resample(wav, sr, SR) if sr != SR else wav
+def load_16k(path: Path, highpass: float = 0.0) -> torch.Tensor:
+    wav, sr = sf.read(path, dtype="float64", always_2d=True)
+    x = wav.mean(1)
+    if highpass > 0:
+        x = sosfiltfilt(butter(4, highpass, "highpass", fs=sr, output="sos"), x)
+    t = torch.from_numpy(x.astype(np.float32))
+    return AF.resample(t, sr, SR) if sr != SR else t
 
 
 class Scorers:
@@ -47,19 +56,25 @@ class Scorers:
 
 
 @torch.no_grad()
-def score_dir(paths: list[Path], scorers: Scorers, workers: int) -> dict[str, dict[str, float]]:
+def score_dir(paths: list[Path], scorers: Scorers, workers: int, highpass: float, tmp: Path) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
+    tmp.mkdir(parents=True, exist_ok=True)
     for path in paths:
-        wav = load_16k(path)
+        wav = load_16k(path, highpass)
         out[path.stem] = {"utmos22": float(scorers.utmos22(wav[None].to(scorers.device), SR)[0])}
+        if highpass > 0:  # UTMOSv2 reads files: give it the filtered ones
+            sf.write(tmp / path.name, wav.numpy(), SR)
     # UTMOSv2's spectrograms are made on the CPU in the data loader: one call per directory
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
     res = scorers.v2.predict(
-        input_dir=paths[0].parent, val_list=[p.stem for p in paths], device=scorers.device,
+        input_dir=tmp if highpass > 0 else paths[0].parent, val_list=[p.stem for p in paths], device=scorers.device,
         num_workers=workers, batch_size=16, num_repetitions=3, verbose=False,
     )
+    for f in tmp.glob("*.wav"):
+        f.unlink()
+    tmp.rmdir()
     for r in res:
         out[Path(r["file_path"]).stem]["utmosv2"] = float(r["predicted_mos"])
     return out
@@ -71,6 +86,7 @@ def main() -> None:
     parser.add_argument("names", nargs="+")
     parser.add_argument("--ref", default=None, help="also print the paired difference from this name")
     parser.add_argument("--workers", type=int, default=22)
+    parser.add_argument("--highpass", type=float, default=0.0, help="Hz; filter every file first (see above)")
     parser.add_argument("--keys", type=Path, default=None, help="only the keys listed in this file (one per line)")
     args = parser.parse_args()
 
@@ -86,14 +102,14 @@ def main() -> None:
     scores: dict[str, dict[str, dict[str, float]]] = {}
     scorers: Scorers | None = None
     for name in names:
-        cache = args.root / f"mos_{name}.json"
+        cache = args.root / (f"mos_hp{args.highpass:g}_{name}.json" if args.highpass > 0 else f"mos_{name}.json")
         if cache.exists():
             scores[name] = json.loads(cache.read_text())
             continue
         paths = sorted((args.root / name).glob("*.wav"))
         print(f"{name}: {len(paths)} files", flush=True)
         scorers = scorers or Scorers(device)
-        scores[name] = score_dir(paths, scorers, args.workers)
+        scores[name] = score_dir(paths, scorers, args.workers, args.highpass, args.root / f".mos_tmp_{os.getpid()}")
         cache.write_text(json.dumps(scores[name]))
 
     common = set.intersection(*(set(s) for s in scores.values()))
