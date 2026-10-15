@@ -34,6 +34,7 @@ from scipy.signal import istft, stft
 Audio = npt.NDArray[np.float64]
 Spec = npt.NDArray[np.complex128]
 CROSS = 4000.0
+FIXES = ("noexcess", "time", "shape", "both", "fine", "demod80")
 
 
 def spec(x: Audio, sr: int, nfft: int) -> Spec:
@@ -84,12 +85,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("recon", type=Path, help="directory written by recon_jvs.py")
     parser.add_argument("--dec", required=True, help="the decoder whose 4 kHz+ part is fixed")
-    parser.add_argument("--also", nargs="*", default=[], help="decoders played as they are, for reference")
+    parser.add_argument(
+        "--also", nargs="*", default=[], help="decoders played as they are, for reference (NAME or NAME=label)"
+    )
     parser.add_argument("--keys", nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--fixes",
+        nargs="*",
+        default=list(FIXES),
+        choices=FIXES,
+        help="the rows that fix one scale of --dec (default: all of them)",
+    )
     parser.add_argument("--profile-items", type=int, default=150)
     parser.add_argument("--title", default="M2: 4 kHz 以上のどの細かさの違いが機械音か")
+    parser.add_argument("--intro", default=None, help="the page's opening paragraph (HTML)")
     args = parser.parse_args()
+    also = dict(a.split("=", 1) if "=" in a else (a, f"{a} (参考)") for a in args.also)
 
     with open(args.recon / "items.jsonl", encoding="utf-8") as f:
         items = {it["key"]: it for it in map(json.loads, f)}
@@ -109,13 +121,14 @@ def main() -> None:
         ("both", f"{d}: 4 kHz 以上の、包絡 (500 Hz × 約 20 ms の音量) を録音に (上の 2 つを合わせたもの)"),
         ("fine", f"{d}: 4 kHz 以上の、500 Hz より細かい構造 (倍音) だけを録音に (包絡は {d} のまま)"),
         ("demod80", f"{d}: 80 ms 格子の平均の模様を割って除く (録音を使わない、推論でもできる処理)"),
-        *[(a, f"{a} (参考)") for a in args.also],
+        *also.items(),
     ]
+    rows = [(tag, text) for tag, text in rows if tag not in FIXES or tag in args.fixes]
     cells: dict[str, list[str]] = {tag: [] for tag, _ in rows}
     heads = []
     for key in args.keys:
         r, _ = sf.read(args.recon / "orig" / f"{key}.wav", dtype="float64")
-        xs = {name: sf.read(args.recon / name / f"{key}.wav", dtype="float64")[0] for name in [d, *args.also]}
+        xs = {name: sf.read(args.recon / name / f"{key}.wav", dtype="float64")[0] for name in [d, *also]}
         n = min(len(r), *(len(x) for x in xs.values()))
         r, x = r[:n], xs[d][:n]
         lr, ld = lowpass(r, sr, CROSS), lowpass(x, sr, CROSS)
@@ -130,9 +143,11 @@ def main() -> None:
             "both": ld + spectral_envelope(hd, hr, sr, keep_level=False),
             "fine": ld + fine_structure(hd, hr, sr),
             "demod80": x - grid_component(x, sr, prof, "80ms"),
-            **{a: xs[a][:n] for a in args.also},
+            **{a: xs[a][:n] for a in also},
         }
         for tag, y in out.items():
+            if tag not in cells:
+                continue
             peak = np.abs(y).max()
             y = y * 0.99 / peak if peak > 0.99 else y
             path = audio / f"{tag}_{key}.wav"
@@ -141,14 +156,17 @@ def main() -> None:
         it = items[key]
         heads.append(f'<th>{html.escape(key)} ({it["gender"]})<div class="t">{html.escape(it["text"])}</div></th>')
         print(key, flush=True)
+    intro = args.intro or (
+        "前回の結果: 機械音は 4 kHz 以上にあり、位相ではなく振幅 (スペクトル) にあり、「多い成分を除く」とほぼ消える。"
+        f"ここでは {html.escape(d)} の 4 kHz 以上のうち、1 つの細かさだけを録音のものに入れ替えています"
+        f" (4 kHz 未満と位相は {html.escape(d)} のまま)。機械音が消える行が、その細かさに原因があることを示します。"
+    )
     body = "".join(f'<tr><th class="w">{html.escape(text)}</th>{"".join(cells[tag])}</tr>' for tag, text in rows)
     page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>{html.escape(args.title)}</title>
 <style>body{{font-family:sans-serif;margin:1.5em}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px 8px;vertical-align:top;text-align:left}}
 th.w{{font-weight:normal;width:26em}}.t{{font-weight:normal;font-size:80%;color:#555;max-width:16em}}audio{{width:200px}}</style>
 </head><body><h1>{html.escape(args.title)}</h1>
-<p>前回の結果: 機械音は 4 kHz 以上にあり、位相ではなく振幅 (スペクトル) にあり、「多い成分を除く」とほぼ消える。
-ここでは {html.escape(d)} の 4 kHz 以上のうち、1 つの細かさだけを録音のものに入れ替えています (4 kHz 未満と位相は {html.escape(d)} のまま)。
-機械音が消える行が、その細かさに原因があることを示します。</p>
+<p>{intro}</p>
 <table><tr><th></th>{"".join(heads)}</tr>{body}</table></body></html>"""
     (args.out / "index.html").write_text(page, encoding="utf-8")
     print("written", args.out / "index.html")
