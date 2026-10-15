@@ -1,0 +1,56 @@
+# B-CC tail test: does the trailing extra speech go away with the speech ends of YODAS3 moved?
+# After the decay (500k) the teacher adds a short sound after the text in 1,170 of the 1,500
+# JKYB-mini sentences ("、ン", "、エー"; the main line: 37-47) and does not stop on 18 of the
+# short sentences; with no frames generated after EOS it is 353, so most of it is spoken in the
+# frames after EOS. In the training data only the YODAS3 clips end differently: the fed clip goes
+# on ~240 ms after the last speech (median; 3+ quiet frames in 74%), Emilia and the synthetic sets
+# ~80 ms (3+ in 6-11%), because the YouTube background keeps the speech-end detector on.
+# Mix v7 = v6 with scripts/yodas3/trim_tails.py's speech ends for YODAS3 (one quiet frame after
+# the last speech, as in Emilia). Starts from runs/BCC_4k's 500k checkpoint (hard-linked into
+# runs/BCC_4k_tail) at a constant 1e-4 for 10k steps: evaluate 505k and 510k against 500k.
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v7.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  schedule: constant
+  warmup_steps: 500
+
+run_dir: runs/BCC_4k_tail
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 510000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
