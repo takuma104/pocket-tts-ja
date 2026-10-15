@@ -52,6 +52,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from hf_structure import N_FFT, PAD, band_stats, refine_f0, spectrum, voiced_f0
 from pocket_tts_ja.codec_ft import (
+    BandEnvelopeLoss,
     Discriminators,
     FineSpectrumLoss,
     GridModulationLoss,
@@ -306,6 +307,10 @@ def validate(
         out[f"grid_{name}"] = float(grid_loss(fake_t, real_t))
         out[f"gridL_{name}"] = float(grid_latent_loss(fake_t, real_t))
         out[f"sub_{name}"] = float(SubsonicLoss(mimi.sample_rate)(fake_t, real_t))
+        # the 4-11 kHz envelope at 500 Hz x 21 ms: mean overshoot / shortfall in dB (power) over the recording
+        diff = 20 * BandEnvelopeLoss(mimi.sample_rate, f_hi=11000.0, n_ffts=(512,)).to(device).differences(fake_t, real_t)[0]
+        out[f"envover_{name}"] = float(diff.clamp(min=0).mean())
+        out[f"envunder_{name}"] = float((-diff).clamp(min=0).mean())
         out |= {f"{key}_{name}": value for key, value in high_band_structure(refs, fakes, mimi.sample_rate).items()}
     return out
 
@@ -344,6 +349,11 @@ def main() -> None:
                              "encoder still sees the clip as it is")
     parser.add_argument("--grid-latent", action="store_true",
                         help="that loss also folds on the 80 ms latent frame (the 12.5 Hz upsampling)")
+    parser.add_argument("--w-env", type=float, default=0.0,
+                        help="weight of the L1 loss on the log band envelope above --env-band[0] (500 Hz bands, 256 / 512 STFT)")
+    parser.add_argument("--env-over", type=float, default=1.0,
+                        help="weight of that loss where the decoder's envelope is above the recording's")
+    parser.add_argument("--env-band", type=float, nargs=2, default=[4000.0, 12000.0], metavar=("LO", "HI"))
     parser.add_argument("--grid-unbiased", action="store_true",
                         help="that loss without the floor of the clips' own modulation (products of different clips' profiles)")
     parser.add_argument("--high-cross", type=float, default=0.0,
@@ -449,6 +459,7 @@ def main() -> None:
             noise_loss = MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross).to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
     sub_loss = SubsonicLoss(sample_rate)
+    env_loss = BandEnvelopeLoss(sample_rate, f_lo=args.env_band[0], f_hi=args.env_band[1], over=args.env_over).to(device)
     grid_loss = GridModulationLoss(sample_rate, latent_frames=round(mimi.encoder_frame_rate / mimi.frame_rate) if args.grid_latent else 0,
                                    unbiased=args.grid_unbiased)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
@@ -644,6 +655,10 @@ def main() -> None:
                 noise = noise_loss(own, real, kept) if isinstance(noise_loss, VoicingBlendMelLoss) else noise_loss(own, kept)
                 loss_g = loss_g + args.noise_stock * noise
                 stats["noise"] = float(noise.detach())
+            if args.w_env > 0:
+                env = env_loss(fake, real)
+                loss_g = loss_g + args.w_env * env
+                stats["env"] = float(env.detach())
             if args.w_spec > 0:
                 shared = spec_loss(fake, real)
                 loss_g = loss_g + args.w_spec * shared

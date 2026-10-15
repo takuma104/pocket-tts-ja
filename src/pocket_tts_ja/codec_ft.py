@@ -184,6 +184,64 @@ class FineSpectrumLoss(nn.Module):
         return total / len(self.n_ffts)
 
 
+class BandEnvelopeLoss(nn.Module):
+    """L1 distance of the log band envelopes above `f_lo`: bands `band_hz` wide, 10-20 ms frames.
+
+    Listening (2026-10-16): the fine-tuned decoders' 4 kHz+ band sounds mechanical, and the sound
+    goes when the envelope of that band at 500 Hz x 20 ms is taken from the recording; taking its
+    finer structure (the harmonics) from the recording changes nothing, and the decoder with its
+    overshoot over the recording removed sounds fine. Frame by frame its 1 kHz bands are off by
+    about 4.7 dB rms in voiced speech (3 dB at 2-4 kHz). FineSpectrumLoss compares single bins of
+    43 / 85 ms windows and does not see this scale in time; the mel loss no longer covers the band.
+
+    Triangular bands (centres `band_hz` apart, each reaching the next centre: they add up to 1) on
+    the STFT power of each of `n_ffts` (hop a quarter); the log10 of the band's magnitude (square
+    root of its power). A cell counts down to `floor` times the recording's mean band magnitude
+    (per clip). `over` weighs the cells where the decoder is louder than the recording: an
+    overshoot is heard, a shortfall much less.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int,
+        f_lo: float = 4000.0,
+        f_hi: float = 12000.0,
+        band_hz: float = 500.0,
+        n_ffts: tuple[int, ...] = (256, 512),
+        over: float = 1.0,
+        floor: float = 1e-2,
+    ) -> None:
+        super().__init__()
+        self.n_ffts = n_ffts
+        self.over = over
+        self.floor = floor
+        centres = torch.arange(f_lo, f_hi + 1, band_hz)
+        for n_fft in n_ffts:
+            freqs = torch.fft.rfftfreq(n_fft, 1 / sample_rate)
+            bank = (1 - (freqs[None] - centres[:, None]).abs() / band_hz).clamp(min=0) * (freqs >= f_lo)
+            self.register_buffer(f"bank_{n_fft}", bank, persistent=False)
+            self.register_buffer(f"window_{n_fft}", torch.hann_window(n_fft), persistent=False)
+
+    def differences(self, fake: torch.Tensor, real: torch.Tensor) -> list[torch.Tensor]:
+        """Per STFT size, [B, bands, frames] log10 band magnitude of fake minus real."""
+        out = []
+        for n_fft in self.n_ffts:
+            window, bank = getattr(self, f"window_{n_fft}"), getattr(self, f"bank_{n_fft}")
+            bands = []
+            for wav in (fake, real):
+                spec = torch.stft(wav[:, 0].float(), n_fft, n_fft // 4, window=window, return_complex=True)
+                bands.append(torch.einsum("kf,bft->bkt", bank, spec.abs().pow(2)).clamp(min=0).sqrt())
+            floor = self.floor * bands[1].mean(dim=(1, 2), keepdim=True) + 1e-7
+            out.append((bands[0] + floor).log10() - (bands[1] + floor).log10())
+        return out
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        total = fake.new_zeros(())
+        for diff in self.differences(fake, real):
+            total = total + torch.where(diff > 0, self.over * diff, -diff).mean()
+        return total / len(self.n_ffts)
+
+
 class HighBandWaveLoss(nn.Module):
     """L1 distance between the high-passed waveforms, relative to the level of the target's.
 
