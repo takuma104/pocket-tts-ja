@@ -10,6 +10,10 @@ of a set are repeated equally. Calls scripts/build_train_mix.py.
     uv run python scripts/make_bcc_mix.py --out data/mix/BCC_train_v2.jsonl
     uv run python scripts/make_bcc_mix.py --out data/mix/BCC_train_v7.jsonl \
         --yodas3 yodas3_kept/train_punct_trim.jsonl   # speech ends of YODAS3 moved (yodas3/trim_tails.py)
+    uv run python scripts/make_bcc_mix.py --out data/mix/BCC_train_v8.jsonl \
+        --yodas3 yodas3_kept/train_punct_trim_rechecked.jsonl \
+        --emilia emilia_ja/train_rechecked_yodas_tail.jsonl \
+        --emilia-gain emilia_ja_gain/train_yodas_tail.jsonl   # filter_asr_recheck.py --max-tail 2
 """
 
 import argparse
@@ -39,8 +43,12 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="print the shares only")
     parser.add_argument("--yodas3", default=NATURAL["yodas3"],
                         help="YODAS3 manifest under --data (mix v7: yodas3_kept/train_punct_trim.jsonl)")
+    parser.add_argument("--emilia", default=NATURAL["emilia"], help="Emilia-YODAS manifest under --data")
+    parser.add_argument("--emilia-gain", default=NATURAL["emilia_gain"], help="its gain copies under --data")
     args = parser.parse_args()
     NATURAL["yodas3"] = args.yodas3
+    NATURAL["emilia"] = args.emilia
+    NATURAL["emilia_gain"] = args.emilia_gain
 
     natural = sum(hours(args.data / p) for p in NATURAL.values())
     parts: dict[str, list[tuple[str, Path, float]]] = {}
