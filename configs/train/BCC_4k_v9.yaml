@@ -1,0 +1,55 @@
+# B-CC on mix v9: 550k -> 560k at the same constant 1e-4 (from runs/BCC_4k_tail's 550k, mix v8).
+# On v8 the sentences with 2+ extra kana after the text stayed at 8.5-10.9% (545k-550k; main line
+# 1.1%), and 5k steps without YODAS3 took it only to 7.1% (configs/train/BCC_4k_noy3.yaml). The
+# ASR-checked ends of every source are clean now, but inside the clips the CC-BY natural speech
+# has fillers and backchannels the transcript lacks ("えー", "うん", "はい") two to three times as
+# often as the main line's Emilia (YODAS3 13.3%, Emilia-YODAS 9.0%, Emilia without YODAS 5.2%):
+# the model learns to say them with no text for them. Mix v9 = v8 with filter_asr_recheck.py
+# --drop-fillers on YODAS3 (559 -> 386 h) and Emilia-YODAS (299 -> 250 h, gain copies the same).
+# Evaluate 555k and 560k against 550k.
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v9.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  schedule: constant
+  warmup_steps: 500
+
+run_dir: runs/BCC_4k_v9
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 560000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."

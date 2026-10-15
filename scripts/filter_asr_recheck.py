@@ -13,6 +13,11 @@ transcript kana, fillers included: a short "うん" / "えー" / "はい" after 
 speaker's backchannel in YouTube talk) passes the insertion rule but teaches the model to add
 it after the text (B-CC's trailing extra speech).
 
+With --drop-fillers a clip is also dropped when the ASR heard a filler or backchannel the
+transcript lacks anywhere in the clip ("えー", "うん", "はい", a hum: an insertion of up to
+FILLER_INSERT_MAX kana that contains one of BACKCHANNELS). The insertion rule cannot see them
+(fillers are stripped first); a model trained on them says "ウン" with no text for it.
+
     uv run python scripts/filter_asr_recheck.py data/emilia_ja/train.jsonl data/emilia_ja/asr_recheck.jsonl \
         --out data/emilia_ja/train_rechecked.jsonl
 """
@@ -27,7 +32,7 @@ import numpy as np
 from rapidfuzz.distance import Levenshtein
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from pocket_tts_ja.kana import canonical_kana, reading, strip_fillers  # noqa: E402
+from pocket_tts_ja.kana import FILLERS, canonical_kana, reading, strip_fillers  # noqa: E402
 
 BINS = ((0, 15), (15, 30), (30, 60), (60, 10_000))
 
@@ -64,6 +69,20 @@ def tail_len(ref: str, hyp: str) -> int:
     return n
 
 
+BACKCHANNELS = (*FILLERS, "ハイ", "ンン", "ハア", "フウ")
+FILLER_INSERT_MAX = 6
+
+
+def inserted_filler(ref: str, hyp: str) -> bool:
+    """Whether the ASR heard a filler / backchannel the reference lacks (a short insertion)."""
+    for o in Levenshtein.opcodes(ref, hyp):
+        if o.tag == "insert" and o.dest_end - o.dest_start <= FILLER_INSERT_MAX:
+            ins = hyp[o.dest_start : o.dest_end]
+            if any(f in ins for f in BACKCHANNELS):
+                return True
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("manifest", type=Path)
@@ -75,6 +94,8 @@ def main() -> None:
     parser.add_argument("--max-hyp-ratio", type=float, default=2.5, help="ASR loop guard: len(hyp)/len(ref)")
     parser.add_argument("--max-tail", type=int, default=None,
                         help="drop clips with this many ASR kana (fillers included) after the transcript")
+    parser.add_argument("--drop-fillers", action="store_true",
+                        help="drop clips with a filler / backchannel the transcript lacks")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--keep-unchecked", action="store_true", help="pass rows the recheck has not reached")
     parser.add_argument("--truncated-at", type=int, default=115,
@@ -90,7 +111,7 @@ def main() -> None:
     with Pool(args.workers) as pool:
         refs = pool.map(ref_reading, [r["transcript"] for r in rows], chunksize=512)
         fulls = (pool.map(full_reading, [r["transcript"] for r in rows], chunksize=512)
-                 if args.max_tail is not None else [""] * len(rows))
+                 if args.max_tail is not None or args.drop_fillers else [""] * len(rows))
     stats = []
     for r, ref, full in zip(rows, refs, fulls, strict=True):
         hyp = strip_fillers(canonical_kana(hyps[r["id"]]))
@@ -101,14 +122,17 @@ def main() -> None:
         bad_cer = s["cer"] > args.max_cer
         tail = (args.max_tail is not None and not truncated
                 and tail_len(full, canonical_kana(hyps[r["id"]])) >= args.max_tail)
-        reason = "loop" if loop else "extra" if extra else "cer" if bad_cer else "tail" if tail else ""
+        filler = args.drop_fillers and inserted_filler(full, canonical_kana(hyps[r["id"]]))
+        reason = ("loop" if loop else "extra" if extra else "cer" if bad_cer else "tail" if tail
+                  else "filler" if filler else "")
         stats.append((len(ref), reason, r, ref, hyp))
 
     tail_rule = f", ASR tail >= {args.max_tail} kana" if args.max_tail is not None else ""
+    tail_rule += ", a filler the transcript lacks" if args.drop_fillers else ""
     print(f"{len(stats)} clips rechecked; drop when insertions >= max({args.min_insert}, "
           f"{args.insert_frac} x ref), CER > {args.max_cer}{tail_rule}, or ASR loop\n")
-    print("| ref kana | clips | extra speech | CER | ASR loop | tail | kept |")
-    print("|---|---:|---:|---:|---:|---:|---:|")
+    print("| ref kana | clips | extra speech | CER | ASR loop | tail | filler | kept |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|")
     for lo, hi in BINS:
         sel = [s for s in stats if lo <= s[0] < hi]
         if not sel:
@@ -116,7 +140,7 @@ def main() -> None:
         def share(reason: str) -> str:
             return f"{100 * np.mean([s[1] == reason for s in sel]):.1f}%"
         print(f"| {lo}-{hi if hi < 10_000 else ''} | {len(sel)} | {share('extra')} | {share('cer')} | "
-              f"{share('loop')} | {share('tail')} | {share('')} |")
+              f"{share('loop')} | {share('tail')} | {share('filler')} | {share('')} |")
     kept = [s[2] for s in stats if not s[1]]
     hours = sum(r["lat_len"] for r in kept) * 0.08 / 3600
     print(f"\nkept {len(kept)} / {len(stats)} rechecked clips ({hours:.1f}h)")
@@ -125,7 +149,7 @@ def main() -> None:
         kept += unchecked
         print(f"plus {len(unchecked)} clips not rechecked yet ({sum(r['lat_len'] for r in unchecked) * 0.08 / 3600:.1f}h), "
               f"longer than {min(r['lat_len'] for r in unchecked) * 0.08:.1f}s")
-    for _, reason, r, ref, hyp in [s for s in stats if s[1] in ("extra", "tail")][: args.examples]:
+    for _, reason, r, ref, hyp in [s for s in stats if s[1] in ("extra", "tail", "filler")][: args.examples]:
         print(f"  [{reason}] {r['transcript']}\n      ref {ref}\n      asr {hyp}")
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
