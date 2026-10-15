@@ -54,6 +54,7 @@ from hf_structure import N_FFT, PAD, band_stats, refine_f0, spectrum, voiced_f0
 from pocket_tts_ja.codec_ft import (
     Discriminators,
     FineSpectrumLoss,
+    GridModulationLoss,
     HighBandWaveLoss,
     MultiScaleMelLoss,
     SharedSpectrumLoss,
@@ -274,6 +275,7 @@ def validate(
     harmonic: HarmonicConfig | None = None,
 ) -> dict[str, float]:
     out = {}
+    grid_loss = GridModulationLoss(mimi.sample_rate)
     for name, clips in sets.items():
         total = 0.0
         refs, fakes = [], []
@@ -295,6 +297,11 @@ def validate(
             refs.append(clip.numpy())
             fakes.append(fake[0, 0].float().cpu().numpy())
         out[f"mel_{name}"] = total / max(len(clips), 1)
+        n = min(len(r) for r in refs)
+        out[f"grid_{name}"] = float(grid_loss(
+            torch.from_numpy(np.stack([f[:n] for f in fakes]))[:, None].to(device),
+            torch.from_numpy(np.stack([r[:n] for r in refs]))[:, None].to(device),
+        ))
         out |= {f"{key}_{name}": value for key, value in high_band_structure(refs, fakes, mimi.sample_rate).items()}
     return out
 
@@ -322,6 +329,8 @@ def main() -> None:
                         help="weight of the shared long-term spectrum loss (against tones at the stride frequencies)")
     parser.add_argument("--spec-band", type=float, nargs=2, default=(300.0, 11000.0), metavar=("LO", "HI"),
                         help="band of that loss in Hz; a tone moves to just outside it if it can")
+    parser.add_argument("--w-grid", type=float, default=0.0,
+                        help="weight of the loss on high-band amplitude modulation locked to the 5 ms frame grid")
     parser.add_argument("--high-cross", type=float, default=0.0,
                         help="Hz; above it the mel loss against the recording is replaced by --high-mode "
                              "(0: the mel loss covers the whole band)")
@@ -424,6 +433,7 @@ def main() -> None:
         else:
             noise_loss = MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross).to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
+    grid_loss = GridModulationLoss(sample_rate)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0) if disc else None
@@ -619,6 +629,10 @@ def main() -> None:
                 shared = spec_loss(fake, real)
                 loss_g = loss_g + args.w_spec * shared
                 stats["spec"] = float(shared.detach())
+            if args.w_grid > 0:
+                grid = grid_loss(fake, real)
+                loss_g = loss_g + args.w_grid * grid
+                stats["grid"] = float(grid.detach())
             if disc is not None:
                 with torch.no_grad():
                     d_real = disc(real_seg)

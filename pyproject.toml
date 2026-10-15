@@ -26,6 +26,7 @@ dependencies = [
     "torchaudio>=2.11.0",
     "tqdm>=4.70.1",
     "transformers>=5.19.0",
+    "utmosv2",
     "wandb>=0.30.0",
 ]
 
@@ -36,6 +37,7 @@ members = [
 
 [tool.uv.sources]
 pocket-tts = { workspace = true, editable = true }
+utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2.git" }
 
 [build-system]
 requires = ["uv_build>=0.10,<0.11"]

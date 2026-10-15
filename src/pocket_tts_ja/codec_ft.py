@@ -285,6 +285,62 @@ class SharedSpectrumLoss(nn.Module):
         return (self.spectrum(fake) - self.spectrum(real)).mean(dim=0).pow(2).mean()
 
 
+class GridModulationLoss(nn.Module):
+    """Amplitude modulation of the high bands locked to the decoder's 5 ms frame grid.
+
+    The decoder makes 200 Hz frames and upsamples them by 6, 5 and 4 into 24 kHz. Its high bands
+    come out louder at some positions of every 120-sample frame than at others, the same positions
+    in every clip: folded on the grid, the relative envelope of 4-11 kHz deviates by 4-15% from
+    flat in stock Mimi and the fine-tuned decoders (the recordings: 1%, the noise floor), with
+    clip profiles that correlate 0.7-0.97 with their mean. Heard as a buzz at 200 Hz and its
+    multiples (1.2, 2.4 kHz) under the voice - mechanical, and louder once the high band is.
+
+    Per band: the Hilbert envelope of the band-passed output over its own 10 ms mean, minus 1,
+    weighted by the recording's band level (where the band is silent, the relative envelope is
+    arbitrary), folded on `period` samples, averaged over the batch (what differs between clips
+    cancels, the grid's pattern stays), the mean over positions removed; the mean square of what
+    is left. The training windows start on frame boundaries, so the grid is the same in a batch.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int,
+        period: int = 120,
+        bands: tuple[tuple[float, float], ...] = ((2000.0, 4000.0), (4000.0, 6000.0), (6000.0, 8000.0), (8000.0, 11000.0)),
+    ) -> None:
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.period = period
+        self.bands = bands
+
+    def envelopes(self, wav: torch.Tensor) -> list[torch.Tensor]:
+        """[B, T] -> per band [B, T] Hilbert envelope (FFT band-pass, one-sided spectrum doubled)."""
+        n = wav.shape[-1]
+        spec = torch.fft.fft(wav.float())
+        freq = torch.fft.fftfreq(n, 1 / self.sample_rate, device=wav.device)
+        return [torch.fft.ifft(spec * ((freq >= lo) & (freq <= hi)) * 2).abs() for lo, hi in self.bands]
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        """fake, real: [B, 1, T] waveforms whose sample 0 is on the decoder's frame grid."""
+        n = fake.shape[-1] // self.period * self.period
+        fake, real = fake[:, 0, :n], real[:, 0, :n]
+        smooth = 2 * self.period
+        total = fake.new_zeros(())
+        with torch.no_grad():
+            real_env = self.envelopes(real)
+        for env, ref in zip(self.envelopes(fake), real_env, strict=True):
+            mean = F.avg_pool1d(env[:, None], smooth, 1, smooth // 2, count_include_pad=False)[:, 0, :n]
+            rel = env / (mean + 1e-6) - 1
+            weight = F.avg_pool1d(ref[:, None], smooth, 1, smooth // 2, count_include_pad=False)[:, 0, :n]
+            weight[:, :smooth] = 0  # the FFT band-pass wraps around at the window's ends
+            weight[:, -smooth:] = 0
+            weight = weight / (weight.mean(dim=-1, keepdim=True) + 1e-9)
+            fold = (rel * weight).view(fake.shape[0], -1, self.period).sum(1) / weight.view(fake.shape[0], -1, self.period).sum(1).clamp(min=1e-6)
+            profile = fold.mean(0)
+            total = total + (profile - profile.mean()).pow(2).mean()
+        return total
+
+
 class PeriodDiscriminator(nn.Module):
     def __init__(self, period: int, channels: tuple[int, ...] = (32, 128, 256, 512, 512)) -> None:
         super().__init__()
