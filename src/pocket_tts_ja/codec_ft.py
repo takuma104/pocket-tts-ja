@@ -365,6 +365,15 @@ class GridModulationLoss(nn.Module):
         return total
 
 
+def zero_phase_highpass(wav: torch.Tensor, sample_rate: int, lo: float, hi: float) -> torch.Tensor:
+    """[..., T] waveform without what lies below `lo` Hz, a raised-cosine slope up to `hi` Hz,
+    by an FFT over the whole clip (no phase shift; the clip wraps around at its ends)."""
+    n = wav.shape[-1]
+    freq = torch.fft.rfftfreq(n, 1 / sample_rate, device=wav.device)
+    gain = (0.5 - 0.5 * torch.cos(torch.pi * ((freq - lo) / (hi - lo)).clamp(0, 1))).to(wav.dtype)
+    return torch.fft.irfft(torch.fft.rfft(wav.float()) * gain, n).to(wav.dtype)
+
+
 class SubsonicLoss(nn.Module):
     """Content below `cutoff` that the recording does not have.
 

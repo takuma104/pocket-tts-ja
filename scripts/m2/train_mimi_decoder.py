@@ -68,6 +68,7 @@ from pocket_tts_ja.codec_ft import (
     feature_loss,
     generator_loss,
     load_decoder,
+    zero_phase_highpass,
 )
 from pocket_tts_ja.harmonic import (
     CONFIGS,
@@ -336,6 +337,11 @@ def main() -> None:
                         help="weight of the loss on high-band amplitude modulation locked to the 5 ms frame grid")
     parser.add_argument("--w-sub", type=float, default=0.0,
                         help="weight of the loss on content below 40 Hz that the recording does not have (SubsonicLoss)")
+    parser.add_argument("--target-highpass", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                        help="Hz; the recordings the decoder is trained towards lose what is below LO (raised-cosine "
+                             "slope to HI). The studio corpora carry rumble (below 40 Hz: JVNV -31 dB re the signal, "
+                             "Hi-Fi-CAPTAIN -34 dB, JVS -54 dB) that the decoder otherwise learns to put out; the "
+                             "encoder still sees the clip as it is")
     parser.add_argument("--grid-latent", action="store_true",
                         help="that loss also folds on the 80 ms latent frame (the 12.5 Hz upsampling)")
     parser.add_argument("--high-cross", type=float, default=0.0,
@@ -571,6 +577,8 @@ def main() -> None:
         with torch.no_grad():
             latents = mimi.encode_to_latent(wav)
         real = wav[..., start * frame :]
+        if args.target_highpass is not None:
+            real = zero_phase_highpass(wav, sample_rate, *args.target_highpass)[..., start * frame :]
         with torch.set_grad_enabled(train_g):
             if head is not None:
                 phase0 = 2 * math.pi * torch.rand(wav.shape[0], device=device)
