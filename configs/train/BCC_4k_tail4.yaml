@@ -1,0 +1,51 @@
+# B-CC on mix v8, continued: 540k -> 550k at the same constant 1e-4. The first 10k steps on v8
+# (configs/train/BCC_4k_tail3.yaml) took the sentences with 2+ extra kana from 11.0% (530k) to
+# 9.9% (535k) and 8.8% (540k; 0-15 kana: 57.6 -> 34.8%), short Kana-CER 18.2 -> 10.7%. Still going
+# down, or a new plateau? Runs while the clip ends of YODAS3 are checked for a short segment
+# after a pause that the ASR did not transcribe.
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v8.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  schedule: constant
+  warmup_steps: 500
+
+run_dir: runs/BCC_4k_tail
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 550000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."

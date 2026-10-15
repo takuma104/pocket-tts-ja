@@ -42,11 +42,14 @@ def main() -> None:
     parser.add_argument("--max-repeat", type=float, default=3.0)
     parser.add_argument("--dry-run", action="store_true", help="print the shares only")
     parser.add_argument("--yodas3", default=NATURAL["yodas3"],
-                        help="YODAS3 manifest under --data (mix v7: yodas3_kept/train_punct_trim.jsonl)")
+                        help="YODAS3 manifest under --data (mix v7: yodas3_kept/train_punct_trim.jsonl), "
+                        "or none")
     parser.add_argument("--emilia", default=NATURAL["emilia"], help="Emilia-YODAS manifest under --data")
     parser.add_argument("--emilia-gain", default=NATURAL["emilia_gain"], help="its gain copies under --data")
     args = parser.parse_args()
     NATURAL["yodas3"] = args.yodas3
+    if args.yodas3 == "none":
+        del NATURAL["yodas3"]
     NATURAL["emilia"] = args.emilia
     NATURAL["emilia_gain"] = args.emilia_gain
 
