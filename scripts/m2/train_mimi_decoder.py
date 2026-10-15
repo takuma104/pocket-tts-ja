@@ -344,6 +344,8 @@ def main() -> None:
                              "encoder still sees the clip as it is")
     parser.add_argument("--grid-latent", action="store_true",
                         help="that loss also folds on the 80 ms latent frame (the 12.5 Hz upsampling)")
+    parser.add_argument("--grid-unbiased", action="store_true",
+                        help="that loss without the floor of the clips' own modulation (products of different clips' profiles)")
     parser.add_argument("--high-cross", type=float, default=0.0,
                         help="Hz; above it the mel loss against the recording is replaced by --high-mode "
                              "(0: the mel loss covers the whole band)")
@@ -447,7 +449,8 @@ def main() -> None:
             noise_loss = MultiScaleMelLoss(sample_rate, n_mels=high_mels, f_min=args.high_cross).to(device)
     spec_loss = SharedSpectrumLoss(sample_rate, f_lo=args.spec_band[0], f_hi=args.spec_band[1]).to(device)
     sub_loss = SubsonicLoss(sample_rate)
-    grid_loss = GridModulationLoss(sample_rate, latent_frames=round(mimi.encoder_frame_rate / mimi.frame_rate) if args.grid_latent else 0)
+    grid_loss = GridModulationLoss(sample_rate, latent_frames=round(mimi.encoder_frame_rate / mimi.frame_rate) if args.grid_latent else 0,
+                                   unbiased=args.grid_unbiased)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators().to(device) if use_gan else None
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0) if disc else None

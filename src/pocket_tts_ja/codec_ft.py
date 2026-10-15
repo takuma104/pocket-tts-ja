@@ -305,6 +305,12 @@ class GridModulationLoss(nn.Module):
     frames (which removes the pattern above), over their 160 ms mean, folded on the 16 frames of
     an 80 ms latent frame. The upsampling from the 12.5 Hz latents leaves a pattern there too
     (4-8 kHz: 4-7% against the recordings' 0.6%, also 2.5-3% at 1-4 kHz): a 12.5 Hz flutter.
+
+    The batch mean also carries what differs between clips, shrunk by the batch size only: a floor
+    that the recordings themselves have (16 clips: about 0.006 on the 80 ms fold). Pushed below it,
+    the decoder flattens its envelope instead (M2H_H2g2: 0.0004, its 4 kHz+ dips filled by 5 dB).
+    `unbiased` estimates the square of the mean pattern from the products of different clips'
+    profiles only, which has no such floor: it asks for no pattern shared by the clips, nothing more.
     """
 
     def __init__(
@@ -313,20 +319,25 @@ class GridModulationLoss(nn.Module):
         period: int = 120,
         bands: tuple[tuple[float, float], ...] = ((2000.0, 4000.0), (4000.0, 6000.0), (6000.0, 8000.0), (8000.0, 11000.0)),
         latent_frames: int = 0,
+        unbiased: bool = False,
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
         self.period = period
         self.bands = bands
         self.latent_frames = latent_frames
+        self.unbiased = unbiased
 
-    @staticmethod
-    def folded(rel: torch.Tensor, weight: torch.Tensor, period: int) -> torch.Tensor:
-        """Mean square of the batch's weighted mean profile on `period`, its mean removed."""
+    def folded(self, rel: torch.Tensor, weight: torch.Tensor, period: int) -> torch.Tensor:
+        """Mean square of the batch's weighted mean profile on `period`, its mean removed (unbiased:
+        the mean over pairs of different clips of their profiles' product)."""
         batch = rel.shape[0]
         fold = (rel * weight).view(batch, -1, period).sum(1) / weight.view(batch, -1, period).sum(1).clamp(min=1e-6)
-        profile = fold.mean(0)
-        return (profile - profile.mean()).pow(2).mean()
+        fold = fold - fold.mean(dim=-1, keepdim=True)
+        if self.unbiased and batch > 1:
+            pairs = fold.sum(0).pow(2) - fold.pow(2).sum(0)
+            return (pairs / (batch * (batch - 1))).mean()
+        return fold.mean(0).pow(2).mean()
 
     @staticmethod
     def relative(env: torch.Tensor, ref: torch.Tensor, span: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -362,7 +373,7 @@ class GridModulationLoss(nn.Module):
                 ref_frames = ref.view(ref.shape[0], -1, self.period).mean(-1)
                 rel, weight = self.relative(frames, ref_frames, 2 * self.latent_frames)
                 total = total + self.folded(rel, weight, self.latent_frames)
-        return total
+        return total.clamp(min=0) if self.unbiased else total
 
 
 def zero_phase_highpass(wav: torch.Tensor, sample_rate: int, lo: float, hi: float) -> torch.Tensor:
