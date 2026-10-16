@@ -1,0 +1,58 @@
+# D1-CC: the 6-layer student of the CC BY line, distilled from the B-CC teacher after its LR
+# decay. The main line's recipe (D1 + D1b: 42k + 120k steps against its teachers)
+# in one run of 160k steps from the teacher's bottom+top layers: backbone and conditioning
+# regress onto the guidance-combined backbone output of the teacher (distill_cfg_coef 2.0), flow
+# head and EOS head are the teacher's, frozen. Data is the teacher's last mix (v8, CC BY only).
+# Run with scripts/distill/run_d1.sh 620000 configs/train/D1_cc_6l.yaml.
+# The teacher is the B-CC run with the frames after EOS supervised (runs/BCC_4k_peos, after its
+# decay 560k -> 620k on mix v8; the step is picked from 580k / 600k / 620k), and so is the
+# student: the distillation loss also covers the 6 frames of silence after each target.
+ja_post_eos_frames: 6
+model_config: configs/model/ja_cc_6l_4k.yaml
+start_from_pretrained: false
+distill_cfg_coef: 2.0
+distill_teacher_config: configs/model/ja_cc_24l_4k.yaml
+distill_teacher_weights: runs/BCC_4k_peos/weights_620000.safetensors   # scripts/merge_snapshot_weights.py
+
+data:
+  train_jsonl: data/mix/BCC_train_v8.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+
+# no CFG dropout: the teacher's targets are fully conditioned and the student never runs a
+# null branch (upstream note)
+text_dropout: 0.0
+voice_dropout: 0.0
+
+optim:
+  lr: 4e-4
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/D1_cc_6l
+batch_size: 64
+grad_accum_steps: 1
+max_steps: 160000
+stats_ema_steps: 0        # keep the teacher's latent normalization
+ema_decay: 0.9999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 1.0      # the student is sampled without CFG
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
