@@ -17,6 +17,8 @@ cd "$(dirname "$0")/../.." || exit 1
 NAME=$1; shift
 OLD=${OLD:-/home/takuma/co/pocket-tts-ja}
 STEPS=${STEPS:-10000}
+# the sources' shares of the batches (W_EMILIA=0.1 W_HFC_F=0.45 ... to change them)
+W_EMILIA=${W_EMILIA:-0.5} W_HFC_F=${W_HFC_F:-0.25} W_HFC_M=${W_HFC_M:-0.15} W_JVNV=${W_JVNV:-0.1}
 echo $$ > "runs/run_hf_$NAME.pid"
 UV=$(command -v uv || echo ~/.local/bin/uv)
 JVS="jvs=data/jvs_ver1/jvs0[0-9][0-9]/parallel100/wav24kHz16bit/VOICEACTRESS100_00[1-5].wav"
@@ -27,10 +29,10 @@ H="${NAME}_$((STEPS / 2000))k"  # the half-way decoder
 for try in 1 2 3 4; do
   [ -f "$DEC" ] && break
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $UV run python scripts/m2/train_mimi_decoder.py "runs/$NAME" \
-    --data emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:0.5 \
-    --data hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:0.25 \
-    --data hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:0.15 \
-    --data jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:0.1 \
+    --data "emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:$W_EMILIA" \
+    --data "hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:$W_HFC_F" \
+    --data "hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:$W_HFC_M" \
+    --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" \
     --valid-glob "$JVS" --init "$INIT" --init-disc "$OLD/runs/M2_gs2gan_keep4k/checkpoint.pt" \
     --max-steps "$STEPS" --d-warmup 1000 --warmup 500 --lr 5e-5 --lr-d 2e-4 --batch-size 16 --max-seconds 8 \
     --save-every 2500 --valid-every 500 --w-spec 200 --no-wandb "$@" >> "runs/$NAME.log" 2>&1 < /dev/null
@@ -51,8 +53,9 @@ if [ -z "$QUICK" ]; then
   $UV run python scripts/m2/frame_modulation.py exp/m2/recon orig keep4k M2H_H2 "$H" "$NAME" --gender F > "runs/hf_modulation_$NAME.txt" 2>&1
 fi
 echo "$(date) HF_AUDIO_READY"
-$UV run python scripts/m2/mos_eval.py --highpass 40 exp/m2/recon orig keep4k M2H_H2gh "$H" "$NAME" --ref keep4k \
-  > "runs/hf_mos_$NAME.txt" 2>&1
+# one MOS job at a time: each takes ~50 GB of RAM with its data loader workers (two at once ran the machine out of memory)
+flock runs/.mos.lock $UV run python scripts/m2/mos_eval.py --highpass 40 --workers 12 exp/m2/recon orig keep4k M2H_H2gh \
+  "$H" "$NAME" --ref keep4k > "runs/hf_mos_$NAME.txt" 2>&1
 echo "$(date) HF_MOS_DONE"
 for try in 1 2 3; do
   $UV run --project third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition --extra asr \
