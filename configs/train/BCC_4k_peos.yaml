@@ -1,0 +1,55 @@
+# B-CC with the frames after EOS supervised: 550k -> 560k on mix v8 at the same constant 1e-4 (from
+# runs/BCC_4k_tail's 550k). Cleaning the data did not move the extra speech after the text (2+
+# kana in 8.5-11.7% of JKYB-mini, main line 1.1%; mix v8 tail rule, no YODAS3, v9 without the
+# untranscribed fillers). Most of it is in the 5 frames the stock wheel generates after EOS fires
+# (0 frames after EOS: 3.3% at 540k), which upstream training never supervises. Here every target
+# gets 6 frames of digital silence after it (pocket_tts_ja.loader post_eos_frames), with the flow
+# loss on them and the EOS target unchanged (pocket_tts_ja.post_eos). Evaluate 555k and 560k
+# against 550k (10.9%) and the v9 test (11.7%, 9.7%).
+ja_post_eos_frames: 6
+model_config: configs/model/ja_cc_24l_4k.yaml
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/mix/BCC_train_v8.jsonl
+  valid_jsonl: data/mix/BCC_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0   # pocket_tts_ja.loader: cap on the (prefix/full/concat) prompt
+  prompt_trim_max_sec: 0.5
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false            # latents come precomputed
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  schedule: constant
+  warmup_steps: 500
+
+run_dir: runs/BCC_4k_peos
+batch_size: 16
+grad_accum_steps: 4
+max_steps: 560000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 5000
+sample_cfg_coef: 2.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."

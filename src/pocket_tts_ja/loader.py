@@ -17,6 +17,13 @@ then the upstream prompt-trim augmentation (drop 0..prompt_trim_max_sec off the 
 Nothing is read from audio files: the Mimi encoder is causal, so a prefix of the stored
 latents equals a cold encode of that prefix, and no stitch re-encoding is needed.
 
+post_eos_frames > 0 appends that many frames of digital silence (silence_latent.npy,
+scripts/make_silence_latent.py) to every target that is not cut at max_duration_sec, and the
+batch says where the speech ends (JaBatch.num_speech_frames). The EOS target stays on the first
+frame after the speech; the flow loss also covers the silence (pocket_tts_ja.post_eos). The
+stock wheel keeps generating a few frames after EOS (5 for Japanese text), and without this
+nothing ever showed the model what they should be.
+
 Manifest lines (scripts/finalize_emilia_ja.py): {"id", "transcript", "speaker",
 "lat_file", "lat_start", "lat_len", "speech_end", ...}; lat_file is relative to the
 manifest's directory and holds float16 [frames, 32] arrays.
@@ -30,6 +37,7 @@ import random
 import signal
 from collections import defaultdict
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +59,15 @@ MIN_PROMPT_FRAMES = 13  # ~1 s
 # Utterances under 2 s are targets only: the very short synthetic clips (S9) share their speaker
 # labels with the long ones and would otherwise become a fifth of those speakers' voice prompts.
 MIN_PROMPT_SOURCE_FRAMES = 25
+
+SILENCE_LATENT = Path(__file__).with_name("silence_latent.npy")
+
+
+@dataclass
+class JaBatch(Batch):
+    # [B] frames of each target before the appended silence (post_eos_frames); None without it
+    num_speech_frames: torch.Tensor | None = None
+
 
 # One memory map per latent file for the whole process: the trainer builds a new validation
 # loader at every validation and never drops the old one (its prefetch thread stays blocked),
@@ -133,6 +150,7 @@ class JaLatentDataLoader(DataLoader):
         num_bucket_batches: int = 1,
         prompt_trim_max_sec: float = 0.0,
         final_punct_dropout: float = 0.0,
+        post_eos_frames: int = 0,
     ):
         # Deliberately not calling DataLoader.__init__: it indexes audio manifests.
         self.jsonl = jsonl
@@ -156,6 +174,12 @@ class JaLatentDataLoader(DataLoader):
         self.max_target_frames = int(max_duration_sec * frame_rate)
         cap = max_voice_prompt_sec if max_voice_prompt_sec > 0 else 30.0
         self.max_prompt_frames = int(cap * frame_rate)
+        self.post_eos_frames = post_eos_frames
+        self.silence: npt.NDArray[np.float16] | None = None
+        if post_eos_frames > 0:
+            self.silence = np.load(SILENCE_LATENT)
+            assert len(self.silence) >= post_eos_frames, f"{SILENCE_LATENT} has {len(self.silence)} frames"
+            self.silence = self.silence[:post_eos_frames]
 
     def get_entry(self, index: int) -> int:  # type: ignore[override]
         return self.entries[index]
@@ -190,22 +214,27 @@ class JaLatentDataLoader(DataLoader):
 
     def _sample(self, entry: int) -> tuple[Any, ...]:  # type: ignore[override]
         i = int(entry)
-        target = self.corpus.latents(i)[: self.max_target_frames]
+        full = self.corpus.latents(i)
+        target = full[: self.max_target_frames]
+        speech = len(target)
+        if self.silence is not None and len(target) == len(full):
+            target = np.concatenate([target, self.silence])
         tokens = self._tokens(self.corpus.texts[i])
         prompt = self._prompt(i)
         return (
             tokens,
             torch.from_numpy(np.asarray(prompt, dtype=np.float32)),
             torch.from_numpy(np.asarray(target, dtype=np.float32)),
+            speech,
         )
 
     def _row_len(self, sample: tuple[Any, ...]) -> float:
-        tokens, prompt, target = sample
+        tokens, prompt, target, _ = sample
         return prompt.shape[0] + len(tokens) + target.shape[0]
 
     def _collate(self, batch: list[tuple[Any, ...]]) -> Batch:
-        tokens, prompts, targets = zip(*batch, strict=True)
-        return Batch(
+        tokens, prompts, targets, speech = zip(*batch, strict=True)
+        return JaBatch(
             audio=torch.zeros(len(batch), 1, 0),
             num_audio_frames=torch.tensor([t.shape[0] for t in targets], dtype=torch.long),
             text_tokens=list(tokens),
@@ -215,6 +244,9 @@ class JaLatentDataLoader(DataLoader):
             ),
             tail_latents=self._pad_latents(targets, 0),
             prompt_latents=self._pad_latents(prompts, 1),
+            num_speech_frames=(
+                torch.tensor(speech, dtype=torch.long) if self.silence is not None else None
+            ),
         )
 
 
@@ -222,12 +254,20 @@ class JaLatentDataLoader(DataLoader):
 def encode_batch_latents(
     mimi: torch.nn.Module, batch: Batch, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """`training.dataloader.encode_batch` for latent-only batches (no stitch audio)."""
+    """`training.dataloader.encode_batch` for latent-only batches (no stitch audio).
+
+    With appended silence (JaBatch.num_speech_frames) the mask is uint8 instead of bool:
+    1 on the speech, 2 on the silence after it, 0 on padding (pocket_tts_ja.post_eos)."""
     assert batch.tail_latents is not None and batch.prompt_latents is not None
     latents = batch.tail_latents.to(device).float()
     T = latents.shape[1]
     n = batch.num_audio_frames.to(device).clamp(max=T)
-    mask = torch.arange(T, device=device)[None, :] < n[:, None]
+    t = torch.arange(T, device=device)[None, :]
+    mask = t < n[:, None]
+    speech = getattr(batch, "num_speech_frames", None)
+    if speech is not None:
+        speech = speech.to(device).clamp(max=T)
+        mask = mask.to(torch.uint8) + (t >= speech[:, None]).to(torch.uint8) * mask
     voice = batch.prompt_latents.to(device).float()
     n_voice = batch.num_voice_prompt_frames.to(device).clamp(max=voice.shape[1])
     return latents, mask, voice, n_voice
@@ -274,6 +314,7 @@ class JaSubprocessDataLoader:
         num_bucket_batches: int = 1,
         prompt_trim_max_sec: float = 0.0,
         final_punct_dropout: float = 0.0,
+        post_eos_frames: int = 0,
     ):
         ctx = torch_mp.get_context("spawn")
         self._queue = ctx.Queue(maxsize=depth)
@@ -294,6 +335,7 @@ class JaSubprocessDataLoader:
                 "num_bucket_batches": num_bucket_batches,
                 "prompt_trim_max_sec": prompt_trim_max_sec,
                 "final_punct_dropout": final_punct_dropout,
+                "post_eos_frames": post_eos_frames,
             }
             proc = ctx.Process(
                 target=_feed_queue,
