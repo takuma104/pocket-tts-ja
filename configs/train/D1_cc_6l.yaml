@@ -3,16 +3,17 @@
 # in one run of 160k steps from the teacher's bottom+top layers: backbone and conditioning
 # regress onto the guidance-combined backbone output of the teacher (distill_cfg_coef 2.0), flow
 # head and EOS head are the teacher's, frozen. Data is the teacher's last mix (v8, CC BY only).
-# Run with scripts/distill/run_d1.sh 620000 configs/train/D1_cc_6l.yaml.
-# The teacher is the B-CC run with the frames after EOS supervised (runs/BCC_4k_peos, after its
-# decay 560k -> 620k on mix v8; the step is picked from 580k / 600k / 620k), and so is the
-# student: the distillation loss also covers the 6 frames of silence after each target.
+# Run with scripts/distill/run_d1.sh 580000 configs/train/D1_cc_6l.yaml.
+# The teacher is the B-CC run with the frames after EOS supervised (runs/BCC_4k_peos) at 580k, a
+# third into its decay 560k -> 620k on mix v8: later in the decay the extra speech came back,
+# before EOS this time. The student is trained the same way: the distillation loss also covers
+# the 6 frames of silence after each target.
 ja_post_eos_frames: 6
 model_config: configs/model/ja_cc_6l_4k.yaml
 start_from_pretrained: false
 distill_cfg_coef: 2.0
 distill_teacher_config: configs/model/ja_cc_24l_4k.yaml
-distill_teacher_weights: runs/BCC_4k_peos/weights_620000.safetensors   # scripts/merge_snapshot_weights.py
+distill_teacher_weights: runs/BCC_4k_peos/weights_580000.safetensors   # scripts/merge_snapshot_weights.py
 
 data:
   train_jsonl: data/mix/BCC_train_v8.jsonl
