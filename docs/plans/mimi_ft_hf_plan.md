@@ -134,7 +134,7 @@ JVS 再構成（10 話者 × 6 文）の有声フレームで、出力自身の 
 | 名前 | run は `runs/M2H_<条件>`。評価の出力は `exp/m2/recon/<条件>` |
 | 識別器 | 採用版の `checkpoint.pt` の識別器から始め、最初の 1,000 step は識別器だけを学習する（`--init-disc`） |
 | 学習中の監視 | 検証（500 step ごと）で、JVS と held-out の高い声（F0 165Hz 以上）の有声フレームの 4–6 / 6–8kHz の comb とレベルを `progress.jsonl` に記録する |
-| 実行 | `scripts/m2/run_hf.sh NAME [高域の options]`: 学習、5k / 10k の JVS 再構成、`hf_structure.py --own-f0`、`periodicity.py`、Kana-CER、類似度 |
+| 実行 | `scripts/m2/run_hf.sh NAME [高域の options]`: 学習、5k / 10k の JVS 再構成、`hf_structure.py --own-f0`、`periodicity.py`（`QUICK=1` で省く）、MOS（hp40）、Kana-CER、類似度 |
 
 **評価（各 run の 5k と 10k）**
 
@@ -415,7 +415,25 @@ JVS 再構成 1,000 件（keep4k との差。括弧は女性）。**hp40** は�
 
 **試聴ページ `exp/listening/m2h_recon3`**（`make_scale_page.py --fixes noexcess both`、`--also` に H2gh / H2e / H2ex / H2gu / keep4k）: 録音、H2g、H2g の多い成分を除いたもの、H2g の包絡を録音にしたもの（前回 3）、続いて新しい run。
 
-**実行中**: **H2ex4**（H2e + `--env-over 4`）。強く出る側をさらに重くして「多い成分を除く」に近づける。
+H2ex4（H2e + `--env-over 4`）は試聴 5 の前に学習済み（UTMOSv2 hp40 は未測定）。
+
+### 4.8 試聴の結果 5（ユーザー、10/16 昼）と、UTMOSv2 を基準にした探索
+
+**m2h_recon3 の試聴**: H2e / H2ex / H2gu はどれも H2gh より悪化傾向。H2e / H2ex は H2g / H2gh より機械音が**増えて**聞こえ、「多い成分を除く」には近くない。高域の明るさは問題ない。→ 包絡の loss（`--w-env`）と 80ms の unbiased（`--grid-unbiased`）はやめる。
+
+**方針（ユーザー）**: 耳の判断に自信がなくなってきたので、しばらく **UTMOSv2 hp40 を基準に**良し悪しを決めて試行錯誤する。注意: UTMOSv2（と UTMOS22）は 16kHz にリサンプルしてから採点するので、**8kHz より上は見ていない**（ユーザーは 8kHz 以上にも機械音を聞いている）。8kHz 以上は別の指標（高域のレベル、包絡の外れ）で大きく崩れていないかだけ見る。
+
+`run_hf.sh` の MOS を hp40（比較に H2gh）にし、再構成のすぐ後に回すようにした（`HF_MOS_DONE`）。`QUICK=1` で高域の構造の解析を省く。
+
+**H2gh は 10k でもまだ上がっている**（UTMOSv2 hp40 Δkeep4k、括弧は女性）: 2.5k +0.102（+0.152）、5k +0.180（+0.259）、7.5k +0.229（+0.331）、10k +0.253（+0.365）。
+
+**参考: Qwen3-TTS-Tokenizer-12Hz-Trainer**（ユーザーの以前の実験、24→48kHz の decoder）の Global RMS Energy Loss in dB（inworld-ai TTS から）: クリップ全体の RMS の dB の差の 2 乗。`codec_ft.global_rms_loss`、`--w-rms`。そちらの重みは adv 0.3、fm 3、mel 15、RMS 1、D は MPD 0.01 / MSD 0.1、lr_g 1e-5 で 20 万 step 以上。
+
+| run | 変更（H2gh から） | 狙い |
+|---|---|---|
+| H2ghR | `--w-rms 1` | 全体の音量の一致。H2gh の窓の音量の外れは学習中 0.04dB²（約 0.2dB）と小さく、ほぼ H2gh の再現になる（UTMOSv2 の run 間のばらつきの目安にもなる） |
+| H2gh20 | `STEPS=20000` | 長く学習する |
+| H2ghL | `--lr 1e-4` | 速く進める（10k で H2gh20 に届くか） |
 
 ## 5. Phase 2: 容量（案 A）を同じ条件で比べる
 
@@ -462,7 +480,7 @@ Phase 1 の最良の条件に対して、一つずつ変える。
 
 | ファイル | 内容 |
 |---|---|
-| `src/pocket_tts_ja/codec_ft.py` | `expand_residual_layers`、`residual_layers`。`load_decoder` は残差層の多いファイルに合わせて拡張する |
+| `src/pocket_tts_ja/codec_ft.py` | `expand_residual_layers`、`residual_layers`。`load_decoder` は残差層の多いファイルに合わせて拡張する。`BandEnvelopeLoss`（§4.7）、`global_rms_loss`（§4.8） |
 | `scripts/m2/hf_structure.py` | `--own-f0`: 出力自身の F0（1〜2.5kHz で求め、それより上で測る）の comb と、自己相関 F0 のずれ |
 | `scripts/m2/data_harmonicity.py` | 学習データの候補ごとの高域の倍音とレベル（§2.3） |
 | `scripts/m2/overfit_probe.py` | 少数クリップへの過学習で、高域に倍音を作れるかを見る（§2.4） |

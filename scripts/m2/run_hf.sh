@@ -7,8 +7,9 @@
 #      the half-way one is named by its step: STEPS=20000 gives NAME_10k)
 #   3. high-band structure (hf_structure.py --own-f0), fixed-frequency lines (periodicity.py) and
 #      amplitude modulation locked to the 5 ms frame grid (frame_modulation.py)
-#   4. Kana-CER and first-kana errors (kana-whisper), speaker similarity to the recordings
-#   5. neural MOS (UTMOS22 strong, UTMOSv2; mos_eval.py)
+#   4. neural MOS (UTMOS22 strong, UTMOSv2; mos_eval.py, every file high-passed at 40 Hz first)
+#   5. Kana-CER and first-kana errors (kana-whisper), speaker similarity to the recordings
+# QUICK=1 skips step 3.
 #     nohup setsid scripts/m2/run_hf.sh M2H_H1 --high-cross 4000 --high-mode fine --gan-lowpass 4000 \
 #       --spec-band 300 4000 > runs/run_hf_M2H_H1.out 2>&1 < /dev/null &
 # OLD: the earlier working folder of this machine (the adopted run's checkpoint with its discriminators).
@@ -43,11 +44,16 @@ for try in 1 2 3 4; do
     > "runs/hf_recon_$NAME.log" 2>&1 && break
   sleep 30
 done
-$UV run python scripts/m2/hf_structure.py exp/m2/recon orig mimi keep4k "$H" "$NAME" --per-speaker 6 --own-f0 \
-  > "runs/hf_structure_$NAME.txt" 2>&1
-$UV run python scripts/m2/periodicity.py exp/m2/recon orig mimi keep4k "$NAME" > "runs/hf_periodicity_$NAME.txt" 2>&1
-$UV run python scripts/m2/frame_modulation.py exp/m2/recon orig keep4k M2H_H2 "$H" "$NAME" --gender F > "runs/hf_modulation_$NAME.txt" 2>&1
+if [ -z "$QUICK" ]; then
+  $UV run python scripts/m2/hf_structure.py exp/m2/recon orig mimi keep4k "$H" "$NAME" --per-speaker 6 --own-f0 \
+    > "runs/hf_structure_$NAME.txt" 2>&1
+  $UV run python scripts/m2/periodicity.py exp/m2/recon orig mimi keep4k "$NAME" > "runs/hf_periodicity_$NAME.txt" 2>&1
+  $UV run python scripts/m2/frame_modulation.py exp/m2/recon orig keep4k M2H_H2 "$H" "$NAME" --gender F > "runs/hf_modulation_$NAME.txt" 2>&1
+fi
 echo "$(date) HF_AUDIO_READY"
+$UV run python scripts/m2/mos_eval.py --highpass 40 exp/m2/recon orig keep4k M2H_H2gh "$H" "$NAME" --ref keep4k \
+  > "runs/hf_mos_$NAME.txt" 2>&1
+echo "$(date) HF_MOS_DONE"
 for try in 1 2 3; do
   $UV run --project third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition --extra asr \
     python scripts/asr_transcribe.py "exp/m2/recon/$H" "exp/m2/recon/$NAME" --skip-text > "runs/hf_asr_$NAME.log" 2>&1 && break
@@ -57,5 +63,4 @@ $UV run python scripts/analyze_first_kana.py --dataset exp/m2/recon/items.jsonl 
   orig=exp/m2/recon/asr_orig/kana.jsonl mimi=exp/m2/recon/asr_mimi/kana.jsonl keep4k=exp/m2/recon/asr_keep4k/kana.jsonl \
   "$H=exp/m2/recon/asr_$H/kana.jsonl" "$NAME=exp/m2/recon/asr_$NAME/kana.jsonl" > "runs/hf_kana_$NAME.txt" 2>&1
 $UV run python scripts/m2/recon_similarity.py exp/m2/recon mimi keep4k "$H" "$NAME" > "runs/hf_similarity_$NAME.txt" 2>&1
-$UV run python scripts/m2/mos_eval.py exp/m2/recon orig mimi keep4k M2H_H2 "$H" "$NAME" --ref keep4k > "runs/hf_mos_$NAME.txt" 2>&1
 echo "$(date) HF_DONE"

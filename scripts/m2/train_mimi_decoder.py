@@ -68,6 +68,7 @@ from pocket_tts_ja.codec_ft import (
     expand_residual_layers,
     feature_loss,
     generator_loss,
+    global_rms_loss,
     load_decoder,
     zero_phase_highpass,
 )
@@ -354,6 +355,8 @@ def main() -> None:
     parser.add_argument("--env-over", type=float, default=1.0,
                         help="weight of that loss where the decoder's envelope is above the recording's")
     parser.add_argument("--env-band", type=float, nargs=2, default=[4000.0, 12000.0], metavar=("LO", "HI"))
+    parser.add_argument("--w-rms", type=float, default=0.0,
+                        help="weight of the squared difference of the windows' RMS in dB (global_rms_loss)")
     parser.add_argument("--grid-unbiased", action="store_true",
                         help="that loss without the floor of the clips' own modulation (products of different clips' profiles)")
     parser.add_argument("--high-cross", type=float, default=0.0,
@@ -671,6 +674,10 @@ def main() -> None:
                 sub = sub_loss(fake, real)
                 loss_g = loss_g + args.w_sub * sub
                 stats["sub"] = float(sub.detach())
+            if args.w_rms > 0:
+                rms = global_rms_loss(fake, real)
+                loss_g = loss_g + args.w_rms * rms
+                stats["rms"] = float(rms.detach())
             if disc is not None:
                 with torch.no_grad():
                     d_real = disc(real_seg)

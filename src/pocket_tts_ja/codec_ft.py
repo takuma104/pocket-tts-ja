@@ -443,6 +443,14 @@ def zero_phase_highpass(wav: torch.Tensor, sample_rate: int, lo: float, hi: floa
     return torch.fft.irfft(torch.fft.rfft(wav.float()) * gain, n).to(wav.dtype)
 
 
+def global_rms_loss(fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+    """Squared difference of the clips' RMS in dB (fake, real: [B, 1, T]), from the inworld-ai TTS decoder
+    (via takuma104/Qwen3-TTS-Tokenizer-12Hz-Trainer): the overall loudness, not frame by frame."""
+    fake_db = 10 * torch.log10(fake.float().pow(2).mean(-1) + 1e-8)
+    real_db = 10 * torch.log10(real.float().pow(2).mean(-1) + 1e-8)
+    return (fake_db.clamp(min=-80.0) - real_db.clamp(min=-80.0)).pow(2).mean()
+
+
 class SubsonicLoss(nn.Module):
     """Content below `cutoff` that the recording does not have.
 
