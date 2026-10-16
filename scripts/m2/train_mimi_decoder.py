@@ -391,6 +391,9 @@ def main() -> None:
                         help="Hz; the discriminators see both signals low-passed (with --high-cross: they would "
                              "ask for the recording's high band again)")
     parser.add_argument("--gan-seconds", type=float, default=1.0, help="slice of the window the discriminators see")
+    parser.add_argument("--disc-bands", type=int, nargs="*", default=[], metavar="N_FFT",
+                        help="add DAC's multi-band STFT discriminators at these FFT sizes (e.g. 2048 1024 512);"
+                        " with --init-disc they start untrained (the D warmup trains them)")
     parser.add_argument("--ema", type=float, default=0.999)
     parser.add_argument("--clip", type=float, default=100.0, help="gradient norm clip of the decoder")
     parser.add_argument("--log-every", type=int, default=50)
@@ -466,7 +469,7 @@ def main() -> None:
     grid_loss = GridModulationLoss(sample_rate, latent_frames=round(mimi.encoder_frame_rate / mimi.frame_rate) if args.grid_latent else 0,
                                    unbiased=args.grid_unbiased)
     opt_g = torch.optim.AdamW(params, lr=args.lr, betas=(0.8, 0.99), weight_decay=0.0)
-    disc = Discriminators().to(device) if use_gan else None
+    disc = Discriminators(band_ffts=tuple(args.disc_bands)).to(device) if use_gan else None
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0) if disc else None
     print(f"decoder parameters {sum(p.numel() for p in params) / 1e6:.2f}M"
           + (f", discriminators {sum(p.numel() for p in disc.parameters()) / 1e6:.2f}M" if disc else ""), flush=True)
@@ -486,8 +489,11 @@ def main() -> None:
             opt_d.load_state_dict(saved["opt_d"])
         print(f"resumed from step {step}", flush=True)
     elif args.init_disc is not None and disc is not None:
-        disc.load_state_dict(torch.load(args.init_disc, map_location=device, weights_only=True)["disc"])
-        print(f"discriminators from {args.init_disc}", flush=True)
+        missing = disc.load_state_dict(
+            torch.load(args.init_disc, map_location=device, weights_only=True)["disc"], strict=not args.disc_bands
+        ).missing_keys
+        print(f"discriminators from {args.init_disc}" + (f" ({len(missing)} new tensors untrained)" if missing else ""),
+              flush=True)
 
     min_seconds = (args.frames + 2) * frame / sample_rate
     paths, durations, sources, held_out = load_rows(args.data, min_seconds, args.max_seconds)

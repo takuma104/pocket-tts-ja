@@ -531,13 +531,55 @@ class STFTDiscriminator(nn.Module):
         return self.post(z), fmaps
 
 
+class BandSTFTDiscriminator(nn.Module):
+    """One scale of DAC's multi-band STFT discriminator: the complex STFT cut into frequency bands (shares of the
+    bins), each band through its own 2D convolutions, the outputs joined along frequency for one last convolution.
+    A band of its own lets the discriminator judge the high band without the louder low band in the same filters."""
+
+    BANDS = ((0.0, 0.1), (0.1, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0))
+
+    def __init__(self, n_fft: int, filters: int = 32) -> None:
+        super().__init__()
+        self.n_fft = n_fft
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
+        bins = n_fft // 2 + 1
+        self.bands = [(int(lo * bins), int(hi * bins)) for lo, hi in self.BANDS]
+
+        def stack() -> nn.ModuleList:
+            return nn.ModuleList(
+                [weight_norm(nn.Conv2d(2, filters, (3, 9), padding=(1, 4)))]
+                + [weight_norm(nn.Conv2d(filters, filters, (3, 9), stride=(1, 2), padding=(1, 4))) for _ in range(3)]
+                + [weight_norm(nn.Conv2d(filters, filters, (3, 3), padding=(1, 1)))]
+            )
+
+        self.band_convs = nn.ModuleList(stack() for _ in self.bands)
+        self.post = weight_norm(nn.Conv2d(filters, 1, (3, 3), padding=(1, 1)))
+
+    def forward(self, x: torch.Tensor) -> DiscOutput:
+        spec = torch.stft(x, self.n_fft, self.n_fft // 4, window=self.window, normalized=True, return_complex=True)
+        z = torch.view_as_real(spec).permute(0, 3, 2, 1)  # [B, 2, frames, bins]
+        fmaps, outs = [], []
+        for (lo, hi), convs in zip(self.bands, self.band_convs, strict=True):
+            b = z[..., lo:hi]
+            for conv in convs:
+                b = F.leaky_relu(conv(b), LEAK)
+                fmaps.append(b)
+            outs.append(b)
+        return self.post(torch.cat(outs, dim=-1)), fmaps
+
+
 class Discriminators(nn.Module):
     def __init__(
-        self, periods: tuple[int, ...] = (2, 3, 5, 7, 11), n_ffts: tuple[int, ...] = (2048, 1024, 512, 256, 128)
+        self,
+        periods: tuple[int, ...] = (2, 3, 5, 7, 11),
+        n_ffts: tuple[int, ...] = (2048, 1024, 512, 256, 128),
+        band_ffts: tuple[int, ...] = (),
     ) -> None:
         super().__init__()
         self.nets = nn.ModuleList(
-            [PeriodDiscriminator(p) for p in periods] + [STFTDiscriminator(n) for n in n_ffts]
+            [PeriodDiscriminator(p) for p in periods]
+            + [STFTDiscriminator(n) for n in n_ffts]
+            + [BandSTFTDiscriminator(n) for n in band_ffts]
         )
 
     def forward(self, x: torch.Tensor) -> list[DiscOutput]:
