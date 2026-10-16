@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import soundfile as sf
-from make_noise_page import above, grid_component, grid_profiles, lowpass
+from make_noise_page import GridProfiles, above, grid_component, grid_profiles, lowpass
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import istft, stft
 
@@ -81,6 +81,23 @@ def fine_structure(hd: Audio, hr: Audio, sr: int) -> Audio:
     return unspec(zd * np.sqrt(np.clip(gain2, 1e-2, 1e2)), sr, nfft, len(hd))
 
 
+def fixed(tag: str, x: Audio, r: Audio, sr: int, prof: GridProfiles | None) -> Audio:
+    """The decoder's output `x` with one scale of its 4 kHz+ part taken from the recording `r` (see FIXES)."""
+    if tag == "noexcess":
+        zx = spec(x, sr, 1024)
+        return unspec(zx * (1 - above(zx, spec(r, sr, 1024))), sr, 1024, len(x))
+    if tag == "demod80":
+        assert prof is not None
+        return x - grid_component(x, sr, prof, "80ms")
+    ld = lowpass(x, sr, CROSS)
+    hr, hd = r - lowpass(r, sr, CROSS), x - ld
+    if tag == "time":
+        return ld + time_envelope(hd, hr)
+    if tag in ("shape", "both"):
+        return ld + spectral_envelope(hd, hr, sr, keep_level=tag == "shape")
+    return ld + fine_structure(hd, hr, sr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("recon", type=Path, help="directory written by recon_jvs.py")
@@ -100,6 +117,11 @@ def main() -> None:
     parser.add_argument("--profile-items", type=int, default=150)
     parser.add_argument("--title", default="M2: 4 kHz 以上のどの細かさの違いが機械音か")
     parser.add_argument("--intro", default=None, help="the page's opening paragraph (HTML)")
+    parser.add_argument(
+        "--scores",
+        default=None,
+        help="prefix of mos_eval.py's per-file caches in RECON (e.g. mos_hp40_): show each clip's UTMOSv2 and the mean",
+    )
     args = parser.parse_args()
     also = dict(a.split("=", 1) if "=" in a else (a, f"{a} (参考)") for a in args.also)
 
@@ -110,7 +132,7 @@ def main() -> None:
     keys_all = list(items)
     sr = sf.info(args.recon / "orig" / f"{args.keys[0]}.wav").samplerate
     profile_keys = keys_all[:: max(1, len(keys_all) // args.profile_items)][: args.profile_items]
-    prof = grid_profiles(args.recon, args.dec, profile_keys, sr)
+    prof = grid_profiles(args.recon, args.dec, profile_keys, sr) if "demod80" in args.fixes else None
     d = args.dec
     rows: list[tuple[str, str]] = [
         ("orig", "録音"),
@@ -126,33 +148,25 @@ def main() -> None:
     rows = [(tag, text) for tag, text in rows if tag not in FIXES or tag in args.fixes]
     cells: dict[str, list[str]] = {tag: [] for tag, _ in rows}
     heads = []
+    scores: dict[str, dict[str, dict[str, float]]] = {}
+    if args.scores:
+        for tag, _ in rows:
+            cache = args.recon / f"{args.scores}{tag}.json"
+            if cache.exists():
+                scores[tag] = json.loads(cache.read_text())
     for key in args.keys:
         r, _ = sf.read(args.recon / "orig" / f"{key}.wav", dtype="float64")
         xs = {name: sf.read(args.recon / name / f"{key}.wav", dtype="float64")[0] for name in [d, *also]}
         n = min(len(r), *(len(x) for x in xs.values()))
         r, x = r[:n], xs[d][:n]
-        lr, ld = lowpass(r, sr, CROSS), lowpass(x, sr, CROSS)
-        hr, hd = r - lr, x - ld
-        zx, zr = spec(x, sr, 1024), spec(r, sr, 1024)
-        out = {
-            "orig": r,
-            d: x,
-            "noexcess": unspec(zx * (1 - above(zx, zr)), sr, 1024, n),
-            "time": ld + time_envelope(hd, hr),
-            "shape": ld + spectral_envelope(hd, hr, sr, keep_level=True),
-            "both": ld + spectral_envelope(hd, hr, sr, keep_level=False),
-            "fine": ld + fine_structure(hd, hr, sr),
-            "demod80": x - grid_component(x, sr, prof, "80ms"),
-            **{a: xs[a][:n] for a in also},
-        }
+        out = {"orig": r, d: x, **{tag: fixed(tag, x, r, sr, prof) for tag in args.fixes}, **{a: xs[a][:n] for a in also}}
         for tag, y in out.items():
-            if tag not in cells:
-                continue
             peak = np.abs(y).max()
             y = y * 0.99 / peak if peak > 0.99 else y
             path = audio / f"{tag}_{key}.wav"
             sf.write(path, y.astype(np.float32), sr)
-            cells[tag].append(f'<td><audio controls preload="none" src="audio/{path.name}"></audio></td>')
+            score = f'<div class="s">UTMOSv2 {scores[tag][key]["utmosv2"]:.2f}</div>' if key in scores.get(tag, {}) else ""
+            cells[tag].append(f'<td><audio controls preload="none" src="audio/{path.name}"></audio>{score}</td>')
         it = items[key]
         heads.append(f'<th>{html.escape(key)} ({it["gender"]})<div class="t">{html.escape(it["text"])}</div></th>')
         print(key, flush=True)
@@ -161,10 +175,20 @@ def main() -> None:
         f"ここでは {html.escape(d)} の 4 kHz 以上のうち、1 つの細かさだけを録音のものに入れ替えています"
         f" (4 kHz 未満と位相は {html.escape(d)} のまま)。機械音が消える行が、その細かさに原因があることを示します。"
     )
+    if scores:
+        mean_head = f'<th class="t">UTMOSv2 の平均 (この {len(args.keys)} 文 / 全 {len(items)} 文)</th>'
+        heads.append(mean_head)
+        for tag, _ in rows:
+            if tag in scores:
+                shown = np.mean([scores[tag][k]["utmosv2"] for k in args.keys])
+                every = np.mean([v["utmosv2"] for v in scores[tag].values()])
+                cells[tag].append(f'<td class="s">{shown:.2f} / {every:.2f}</td>')
+            else:
+                cells[tag].append("<td></td>")
     body = "".join(f'<tr><th class="w">{html.escape(text)}</th>{"".join(cells[tag])}</tr>' for tag, text in rows)
     page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>{html.escape(args.title)}</title>
 <style>body{{font-family:sans-serif;margin:1.5em}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px 8px;vertical-align:top;text-align:left}}
-th.w{{font-weight:normal;width:26em}}.t{{font-weight:normal;font-size:80%;color:#555;max-width:16em}}audio{{width:200px}}</style>
+th.w{{font-weight:normal;width:26em}}.t{{font-weight:normal;font-size:80%;color:#555;max-width:16em}}audio{{width:200px}}.s{{font-size:85%;color:#225}}</style>
 </head><body><h1>{html.escape(args.title)}</h1>
 <p>{intro}</p>
 <table><tr><th></th>{"".join(heads)}</tr>{body}</table></body></html>"""
