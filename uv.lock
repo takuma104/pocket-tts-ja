@@ -682,6 +682,29 @@ wheels = [
 ]
 
 [[package]]
+name = "libsvm-official"
+version = "3.37.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a4/a0/6cafa26e4f3676ac12f5d8d62203e4fda4526391d8813be32d7540a07029/libsvm_official-3.37.0.tar.gz", hash = "sha256:50dc3e118a92b43554160c2095d7f06325751a7b5dad097e401e11b64820d2cf", size = 40754, upload-time = "2025-12-29T12:06:59.746Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/46/8c153d5762dd5cb32f952d9bae65502e80e4ea411c556ce6a5c71f730a6a/libsvm_official-3.37.0-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:47225d96d2d96a032f9dd7ec37d7f4d7887e98a5a9943eefa3693cb046612101", size = 199709, upload-time = "2025-12-29T12:06:32.04Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/f6/e00f8d83b67e1f053d881dae4b72a590b122f000f5f2b981dfabfb9f4183/libsvm_official-3.37.0-cp313-cp313-macosx_15_0_x86_64.whl", hash = "sha256:a289464f4e5385f0669eed0c57536bad0ee826702b322076574fea7836d82432", size = 211662, upload-time = "2025-12-29T12:06:33.438Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/7c/6036b99359faa4c675b5e8c540c498607bfbc569292b0061db32facf5478/libsvm_official-3.37.0-cp313-cp313-win_amd64.whl", hash = "sha256:6069ffc54239baf4495edaa54fc06e832522473fd096dcd8ba4269752c58a4b2", size = 55455, upload-time = "2025-12-29T12:06:34.575Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/07/d656049597d0df368166cef1eb387c59850da1b2966b5a03efdc263f006b/libsvm_official-3.37.0-cp313-cp313-win_arm64.whl", hash = "sha256:f28452c42a8961e72212baa59657729699a6bae23685040fbdb6ba0780a2d4d1", size = 47418, upload-time = "2025-12-29T12:06:36.125Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/1c/1d682a13f3c79e41364990e8e865c640c81ebee6af19e4645dc41ca4e960/libsvm_official-3.37.0-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:d0ba1ee4b21090580bba3c3d01c03856e481ae093278bb437d19a9786dd2d923", size = 199709, upload-time = "2025-12-29T12:06:37.687Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/0a/2495e292f3ac1cedfb58de3f1072373e78823c41a28893340aa198dfb7ef/libsvm_official-3.37.0-cp314-cp314-macosx_15_0_x86_64.whl", hash = "sha256:54c7d6121428393c8d32b88e302f8d136213ffc564071d995e6946269d1f2614", size = 211664, upload-time = "2025-12-29T12:06:40.26Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/72/cfda59299fb2b55e8c860ef61b43cc75451c88e71acc0afb17230fe027d8/libsvm_official-3.37.0-cp314-cp314-win_amd64.whl", hash = "sha256:5a6d39f776ade6480182a58608ff27d61098bbdee258ec4e929b7d7f17e05d38", size = 56748, upload-time = "2025-12-29T12:06:41.654Z" },
+    { url = "https://files.pythonhosted.org/packages/64/e2/c4d592e6ce305d9cb82746cb283ae4329a06c066030aa794d16134cb8d1e/libsvm_official-3.37.0-cp314-cp314-win_arm64.whl", hash = "sha256:108ba94a14f99188d3a95875fcba5e3ff1d944e718dc21c4f7c5bfe068f29ac3", size = 48770, upload-time = "2025-12-29T12:06:42.724Z" },
+    { url = "https://files.pythonhosted.org/packages/73/6e/59ea03c4f3854c1c242599785304df0aa27b81e151a6650df573c73c3f24/libsvm_official-3.37.0-cp314-cp314t-macosx_15_0_arm64.whl", hash = "sha256:8ae4180eb59d488cda13ff0546518f4975c0fdba26dd4e25537c4421ce26be3d", size = 199714, upload-time = "2025-12-29T12:06:44.643Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/73/9a11cfbe23f705b3c9e330cfdf284c519a2f2c03148559ec6498cad6dfad/libsvm_official-3.37.0-cp314-cp314t-macosx_15_0_x86_64.whl", hash = "sha256:3bf677b0da36284a6037f12051b5c2ed05e57416fa1450a1dee160be18cd0773", size = 211668, upload-time = "2025-12-29T12:06:46.029Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/01/a57985c69cc07184988c906badc4f27ac1b0a027426b68ed0b2c6871740c/libsvm_official-3.37.0-cp314-cp314t-win_amd64.whl", hash = "sha256:c6b93d200e45c105352c8950cc20046a9719b40d522deea56552ae893615ecda", size = 56757, upload-time = "2025-12-29T12:06:47.402Z" },
+    { url = "https://files.pythonhosted.org/packages/72/fd/f2ebc89fd049291db7d971a8d3e3b64692b4617b3ae50f90ecddbbf266f4/libsvm_official-3.37.0-cp314-cp314t-win_arm64.whl", hash = "sha256:eff5a1f30c33c066624e47e5f46f695aa7751e51fd42b45e2d5bff56b97aa4fe", size = 48781, upload-time = "2025-12-29T12:06:48.715Z" },
+]
+
+[[package]]
 name = "line-profiler"
 version = "5.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1673,6 +1696,7 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
     { name = "utmosv2" },
+    { name = "visqol-python" },
     { name = "wandb" },
 ]
 
@@ -1701,6 +1725,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.70.1" },
     { name = "transformers", specifier = ">=5.19.0" },
     { name = "utmosv2", git = "https://github.com/sarulab-speech/UTMOSv2.git" },
+    { name = "visqol-python", specifier = ">=3.8.0" },
     { name = "wandb", specifier = ">=0.30.0" },
 ]
 
@@ -2836,6 +2861,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
+]
+
+[[package]]
+name = "visqol-python"
+version = "3.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "libsvm-official" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "soundfile" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/64/06/050a99e421e5d88bfe6ed774ecb0f997ba3f6ff297dd19100cb123af1edb/visqol_python-3.8.0.tar.gz", hash = "sha256:876460a8d7526f7fa7af1f29b6e007ec1d08a47cf256d764e81f6a9b65b41bc5", size = 940787, upload-time = "2026-09-20T06:11:04.109Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/c8/be3850d99ae7be4524e520d1db9c23ee660f38c8ac212255eff8db446d4d/visqol_python-3.8.0-py3-none-any.whl", hash = "sha256:a4b9aca64e348c26db815f61c98739e1bb21560deb87cebd5596adaefb2fcd78", size = 895863, upload-time = "2026-09-20T06:11:02.453Z" },
 ]
 
 [[package]]

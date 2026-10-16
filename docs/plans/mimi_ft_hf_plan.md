@@ -479,6 +479,33 @@ TTS の出力でも順位は再構成と同じ。以前の「TTS では H2 が k
 
 **事故（10/16 14:10）**: H2ghL と H2gh20 の MOS が同時に走り（1 つで約 50GB の RAM）、メモリが尽きて学習と評価がすべて止まった。`run_hf.sh` の MOS は `flock runs/.mos.lock` で 1 つずつ、`--workers 12` にした。学習データの割合は環境変数（`W_EMILIA` など）で変えられるようにした。
 
+**第 7 回**（UTMOSv2 hp40 Δkeep4k（女性）/ UTMOS22 / Kana-CER / 類似度）: **GAN は 4 倍で頭打ち**。H2ghSG8（スタジオ中心 + GAN 8 倍）+0.364（+0.467）/ −0.067 / 4.82% / 0.788 で、SG4 と同じ UTMOSv2 のまま UTMOS22 と Kana-CER が悪い。H2ghG4（元のデータ配分 + GAN 4 倍）+0.300（+0.409）/ −0.046 / 4.66% / **0.808**: 類似度は保てるが、スタジオ中心より 0.06 低い。次（第 8 回）: SG4 + lr 1e-4（H2ghSG4L）、中間の配分（Emilia 30 / F 35 / M 25 / JVNV 10）+ GAN 4 倍（H2ghMG4）。
+
+### 4.9 指標の比較: ViSQOL と SCOREQ（10/17）
+
+ユーザーの提案で、UTMOSv2 の代わり・補いになるかを JVS 再構成 1,000 件（ViSQOL は 0.6 秒の 1 件を除く 999 件）で調べた。どちらも両方の信号を 40Hz で high-pass。
+
+- **ViSQOL v3**（google/visqol の pure Python 版 `visqol-python`、C++ 版と一致するとされる）: 録音との比較（full reference）。audio mode（48kHz に upsample、50Hz〜24kHz の gammatone 32 帯域の NSIM → SVR で MOS-LQO、録音同士で 4.73）。帯域ごとの類似度も出る（4〜8kHz に 5 帯域、8〜12kHz に 3 帯域。12kHz 以上は両方とも空）。1 件 0.2 秒。
+- **SCOREQ**（`scoreq-pytorch`、fairseq なしの移植）: 16kHz の wav2vec 2.0。natural（NISQA で学習）/ synthetic（VoiceMOS 22）の no-reference と、録音との埋め込みの距離（ref）。
+
+| decoder | UTMOSv2 | ViSQOL | NSIM 4–8k | NSIM 8–12k | SCOREQ nat | SCOREQ syn | SCOREQ ref（小さいほど良い） |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 録音 | 3.414 | 4.732 | 1 | 1 | 4.083 | 3.779 | 0 |
+| 元の Mimi | 2.978 | 3.574 | 0.680 | 0.636 | 3.946 | 3.703 | 0.304 |
+| gs2_80k（試聴で不採用） | 2.840 | **3.987** | 0.788 | 0.761 | **4.177** | 3.777 | 0.260 |
+| keep4k | 3.014 | 3.543 | 0.672 | 0.619 | 4.106 | 3.725 | 0.264 |
+| H2e（試聴で H2gh より悪い） | 3.197 | 3.972 | 0.793 | 0.763 | 4.134 | 3.841 | 0.226 |
+| H2ex（同上） | 3.186 | 3.907 | 0.782 | 0.745 | 4.136 | 3.839 | 0.224 |
+| H2gh | 3.268 | 3.938 | 0.778 | 0.752 | 4.123 | 3.803 | 0.223 |
+| H2ghSG4（試聴で H2gh より良い） | 3.378 | 3.941 | 0.763 | 0.752 | 4.068 | 3.775 | 0.223 |
+
+- **試聴の判断との一致**: UTMOSv2 は 3 つとも一致（gs2_80k < keep4k、H2e / H2ex < H2gh、H2ghSG4 > H2gh）。ViSQOL は gs2_80k を全 decoder で最高とし、H2e を H2gh より上（ファイルの 99% で）、H2ghSG4 は H2gh と同じ。SCOREQ synthetic は H2e / H2ex を上、H2ghSG4 を下とし、3 つとも逆。SCOREQ natural は keep4k と gs2_80k を録音より上とする。
+- 録音を除く 17 decoder の平均の順位相関（UTMOSv2 と）: ViSQOL 0.18、NSIM 4–8k −0.38、SCOREQ syn −0.08、nat −0.6、ref 0.55（keep4k / 元の Mimi と H2 系の差による）。UTMOS22 は −0.86（GAN を強めるほど下がる）。
+- **ViSQOL は録音との近さを測り、1 ファイルごとの揺れが小さい**（H2gh − keep4k は差 / 標準偏差 6.4、全ファイルで H2gh が上。UTMOSv2 は 1.2）。高域が足りない decoder（keep4k、元の Mimi）は 4〜12kHz の NSIM で大きく離れる。しかし高域を録音のレベルに合わせただけのもの（gs2_80k）や、包絡を合わせた H2e も高く出て、聴いた良さとは合わない。GAN を強めた H2ghSG4 の改善（裏のノイズが消えた）は見えず、4〜8kHz の NSIM はむしろ少し下がる。
+- **結論**: 最大化する指標は UTMOSv2 hp40 のまま。ViSQOL は UTMOSv2 が見ない **8〜12kHz の歯止め**として `run_hf.sh` の最後に入れる（`visqol_eval.py`、H2gh との差。H2 系は 0.745〜0.763 で、keep4k は 0.619）。SCOREQ は使わない（16kHz で 8kHz 以上を見ず、試聴とも逆）。
+
+**UTMOSv2 の安定性**: 1,000 件の平均は安定している。H2ghSG4 − H2gh は +0.111（95% 区間 ±0.012）、ファイルごとの差の標準偏差は 0.19、H2ghSG4 が上のファイルは 74%。6 文の平均で逆転する確率は約 7% で、試聴ページの 6 文はその側だった。
+
 ## 5. Phase 2: 容量（案 A）を同じ条件で比べる
 
 Phase 1 の最良の条件で、残差層 1 と 3 を同じデータ・step・seed で比べる（1 本追加）。
@@ -530,6 +557,7 @@ Phase 1 の最良の条件に対して、一つずつ変える。
 | `scripts/m2/overfit_probe.py` | 少数クリップへの過学習で、高域に倍音を作れるかを見る（§2.4） |
 | `scripts/m2/extract_corpus.py` | NAS のコーパスの zip から 24kHz の wav と manifest を作る |
 | `scripts/m2/make_noise_page.py` | 機械音の候補を取り出して聴く試聴ページ（帯域の入れ替え、多い / 足りない成分、格子の模様、倍音と倍音の間、振幅と位相の入れ替え）（§4.5） |
-| `scripts/m2/make_scale_page.py` | 4kHz 以上の 1 つの細かさ（時間の包絡、スペクトルの形、倍音）だけを録音にする試聴ページ（§4.6）。`--fixes` で行を選び、`--also NAME=説明` で decoder を並べる（§4.7） |
+| `scripts/m2/make_scale_page.py` | 4kHz 以上の 1 つの細かさ（時間の包絡、スペクトルの形、倍音）だけを録音にする試聴ページ（§4.6）。`--fixes` で行を選び、`--also NAME=説明` で decoder を並べる（§4.7）。`--scores` で各ファイルの UTMOSv2（§4.8） |
+| `scripts/m2/visqol_eval.py` | ViSQOL（audio mode）と 4kHz 未満 / 4〜8kHz / 8〜12kHz の NSIM を録音と比べる（§4.9）。`run_hf.sh` の最後で回す |
 
 成果物（git 管理外）: `exp/m2/recon`（JVS 再構成: orig / mimi / gs2_80k / keep4k）、`exp/m2/data_harmonicity.txt`、`exp/m2/overfit/*`、`data/m2/*`。

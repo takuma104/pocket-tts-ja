@@ -8,7 +8,8 @@
 #   3. high-band structure (hf_structure.py --own-f0), fixed-frequency lines (periodicity.py) and
 #      amplitude modulation locked to the 5 ms frame grid (frame_modulation.py)
 #   4. neural MOS (UTMOS22 strong, UTMOSv2; mos_eval.py, every file high-passed at 40 Hz first)
-#   5. Kana-CER and first-kana errors (kana-whisper), speaker similarity to the recordings
+#   5. Kana-CER and first-kana errors (kana-whisper), speaker similarity to the recordings, ViSQOL (audio mode, with the
+#      similarity of the 8-12 kHz bands, which the 16 kHz MOS predictors do not see; visqol_eval.py)
 # QUICK=1 skips step 3.
 #     nohup setsid scripts/m2/run_hf.sh M2H_H1 --high-cross 4000 --high-mode fine --gan-lowpass 4000 \
 #       --spec-band 300 4000 > runs/run_hf_M2H_H1.out 2>&1 < /dev/null &
@@ -66,4 +67,6 @@ $UV run python scripts/analyze_first_kana.py --dataset exp/m2/recon/items.jsonl 
   orig=exp/m2/recon/asr_orig/kana.jsonl mimi=exp/m2/recon/asr_mimi/kana.jsonl keep4k=exp/m2/recon/asr_keep4k/kana.jsonl \
   "$H=exp/m2/recon/asr_$H/kana.jsonl" "$NAME=exp/m2/recon/asr_$NAME/kana.jsonl" > "runs/hf_kana_$NAME.txt" 2>&1
 $UV run python scripts/m2/recon_similarity.py exp/m2/recon mimi keep4k "$H" "$NAME" > "runs/hf_similarity_$NAME.txt" 2>&1
+$UV run python scripts/m2/visqol_eval.py exp/m2/recon keep4k M2H_H2gh M2H_H2ghSG4 "$H" "$NAME" --ref M2H_H2gh \
+  > "runs/hf_visqol_$NAME.txt" 2>&1
 echo "$(date) HF_DONE"
