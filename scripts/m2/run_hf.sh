@@ -20,6 +20,9 @@ OLD=${OLD:-/home/takuma/co/pocket-tts-ja}
 STEPS=${STEPS:-10000}
 # the sources' shares of the batches (W_EMILIA=0.1 W_HFC_F=0.45 ... to change them)
 W_EMILIA=${W_EMILIA:-0.5} W_HFC_F=${W_HFC_F:-0.25} W_HFC_M=${W_HFC_M:-0.15} W_JVNV=${W_JVNV:-0.1}
+# W_AMITARO > 0 adds the あみたろ ITA corpus (1 speaker, 0.46 h, strong 6-8 kHz harmonics)
+EXTRA_DATA=()
+[ "${W_AMITARO:-0}" != 0 ] && EXTRA_DATA=(--data "amitaro=data/m2/amitaro/manifest.jsonl:data/m2/amitaro/audio:$W_AMITARO")
 echo $$ > "runs/run_hf_$NAME.pid"
 UV=$(command -v uv || echo ~/.local/bin/uv)
 JVS="jvs=data/jvs_ver1/jvs0[0-9][0-9]/parallel100/wav24kHz16bit/VOICEACTRESS100_00[1-5].wav"
@@ -33,7 +36,7 @@ for try in 1 2 3 4; do
     --data "emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:$W_EMILIA" \
     --data "hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:$W_HFC_F" \
     --data "hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:$W_HFC_M" \
-    --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" \
+    --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" "${EXTRA_DATA[@]}" \
     --valid-glob "$JVS" --init "$INIT" --init-disc "$OLD/runs/M2_gs2gan_keep4k/checkpoint.pt" \
     --max-steps "$STEPS" --d-warmup 1000 --warmup 500 --lr 5e-5 --lr-d 2e-4 --batch-size 16 --max-seconds 8 \
     --save-every 2500 --valid-every 500 --w-spec 200 --no-wandb "$@" >> "runs/$NAME.log" 2>&1 < /dev/null
