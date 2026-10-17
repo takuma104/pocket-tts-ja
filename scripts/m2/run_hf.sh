@@ -26,22 +26,25 @@ EXTRA_DATA=()
 echo $$ > "runs/run_hf_$NAME.pid"
 UV=$(command -v uv || echo ~/.local/bin/uv)
 JVS="jvs=data/jvs_ver1/jvs0[0-9][0-9]/parallel100/wav24kHz16bit/VOICEACTRESS100_00[1-5].wav"
-INIT=runs/M2_gs2gan_keep4k/decoder_step_00090000.safetensors
+# INIT / INIT_DISC: the decoder weights and the checkpoint.pt whose discriminators to start from
+INIT=${INIT:-runs/M2_gs2gan_keep4k/decoder_step_00090000.safetensors}
+INIT_DISC=${INIT_DISC:-$OLD/runs/M2_gs2gan_keep4k/checkpoint.pt}
 DEC=runs/$NAME/decoder_step_$(printf %08d "$STEPS").safetensors
 HALF=runs/$NAME/decoder_step_$(printf %08d $((STEPS / 2))).safetensors
 H="${NAME}_$((STEPS / 2000))k"  # the half-way decoder
-for try in 1 2 3 4; do
+# out of GPU memory while other runs' checks (ASR, ~7 GB) overlap: wait them out (up to ~16 min), resuming from checkpoint.pt
+for try in 1 2 3 4 5 6 7 8; do
   [ -f "$DEC" ] && break
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $UV run python scripts/m2/train_mimi_decoder.py "runs/$NAME" \
     --data "emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:$W_EMILIA" \
     --data "hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:$W_HFC_F" \
     --data "hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:$W_HFC_M" \
     --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" "${EXTRA_DATA[@]}" \
-    --valid-glob "$JVS" --init "$INIT" --init-disc "$OLD/runs/M2_gs2gan_keep4k/checkpoint.pt" \
+    --valid-glob "$JVS" --init "$INIT" --init-disc "$INIT_DISC" \
     --max-steps "$STEPS" --d-warmup 1000 --warmup 500 --lr 5e-5 --lr-d 2e-4 --batch-size 16 --max-seconds 8 \
     --save-every 2500 --valid-every 500 --w-spec 200 --no-wandb "$@" >> "runs/$NAME.log" 2>&1 < /dev/null
   [ -f "$DEC" ] && break
-  echo "$(date) training stopped (try $try): $(grep -a 'Error' "runs/$NAME.log" | tail -1 | cut -c1-200)"; sleep 60
+  echo "$(date) training stopped (try $try): $(grep -a 'Error' "runs/$NAME.log" | tail -1 | cut -c1-200)"; sleep 120
 done
 [ -f "$DEC" ] || { echo "$(date) HF_FAILED"; exit 1; }
 echo "$(date) trained: $(grep -a '^valid @' "runs/$NAME.log" | tail -1 | cut -c1-300)"
