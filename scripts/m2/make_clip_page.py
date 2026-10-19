@@ -1,7 +1,8 @@
 """M2 CC data: a listening page of YODAS3 clips from select_yodas3.py's sets, with each clip's measures.
 
-For each set file (a select_yodas3.py output, or "dropped" for the clips the pool's limits removed), --per-set clips
-drawn at random (seeded) with their F0, high-band comb, band-top levels, DNSMOS and, when cached, UTMOSv2. To check
+For each set file (a select_yodas3.py output by name, any list of {"id"} rows by its .jsonl path, or "dropped" for the
+clips the pool's limits removed), --per-set clips
+drawn at random (seeded) with their F0, high-band comb, band-top levels, DNSMOS and, when cached, UTMOSv2 and UTMOS22. To check
 by ear what the numbers let through: music, reverberation, noise-suppression artefacts, synthetic voices. YODAS3 is
 CC BY 3.0, but the page stays local like the others.
 
@@ -29,30 +30,32 @@ def main() -> None:
     args = parser.parse_args()
     manifest = {r["id"]: r for r in map(json.loads, open(args.dir / "manifest.jsonl"))}
     scores = {r["id"]: r for r in map(json.loads, open(args.dir / "scores.jsonl"))}
-    mos: dict[str, float] = {}
+    mos: dict[str, dict[str, float]] = {}
     for cache in sorted(args.mos_root.glob("mos_hp40_*.json")):
-        mos.update({k: v["utmosv2"] for k, v in json.loads(cache.read_text()).items()})
+        mos.update(json.loads(cache.read_text()))
     audio = args.out / "audio"
     audio.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
     body = [f"<h1>{html.escape(args.title)}</h1>",
             "<p>comb: 倍音の位置と倍音の間のレベル差 (dB、雑音なら 0)。top: 長時間スペクトルの 8–11kHz (1–4kHz 比) と "
-            "11–12kHz (8–11kHz 比)。UTMOSv2 は 40Hz high-pass 後。</p>"]
+            "11–12kHz (8–11kHz 比)。UTMOSv2 / UTMOS22 は 40Hz high-pass 後。</p>"]
     for name in args.sets:
         if name == "dropped":
             chosen = {json.loads(line)["id"] for path in args.dir.glob("sets/all_*.jsonl") for line in open(path)}
             ids = sorted(k for k in scores if k not in chosen)
         else:
-            ids = [json.loads(line)["id"] for line in open(args.dir / "sets" / f"{name}.jsonl")]
+            path = Path(name) if name.endswith(".jsonl") else args.dir / "sets" / f"{name}.jsonl"
+            ids = [json.loads(line)["id"] for line in open(path)]
+            name = path.stem
         picked = rng.sample(ids, min(args.per_set, len(ids)))
         body.append(f"<h2>{html.escape(name)} ({len(ids)} clips, {len(picked)} at random)</h2><table>")
         body.append("<tr><th>clip</th><th>F0</th><th>comb 4–6k / 6–8k</th><th>top</th><th>DNSMOS</th>"
-                    "<th>UTMOSv2</th><th>clipped</th><th></th></tr>")
+                    "<th>UTMOSv2 / 22</th><th>clipped</th><th></th></tr>")
         for clip_id in picked:
             s, m = scores[clip_id], manifest[clip_id]
             shutil.copy(args.dir / "audio" / f"{clip_id}.wav", audio / f"{clip_id}.wav")
             comb = f"{s['comb'][2]:.1f} / {s['comb'][3]:.1f}" if "comb" in s else "-"
-            utmos = f"{mos[clip_id]:.2f}" if clip_id in mos else "-"
+            utmos = f"{mos[clip_id]['utmosv2']:.2f} / {mos[clip_id]['utmos22']:.2f}" if clip_id in mos else "-"
             body.append(
                 f"<tr><td>{html.escape(clip_id)}</td><td>{s.get('f0', 0):.0f}</td><td>{comb}</td>"
                 f"<td>{s['top'][0]:.0f} / {s['top'][1] - s['top'][0]:.0f}</td><td>{m['dnsmos_ovrl']:.2f}</td>"
