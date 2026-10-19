@@ -53,8 +53,8 @@ def main() -> None:
     print(f"{len(scores)} scored, pool {len(pool)}" + (f" (with UTMOSv2: {len(mos)})" if mos else ""))
     out = args.out or args.dir / "sets"
     out.mkdir(parents=True, exist_ok=True)
-    for gender, side in (("f", 1), ("m", -1)):
-        group = [s for s in pool if side * (s["f0"] - args.f0_split) >= 0]
+    for gender, female in (("f", True), ("m", False)):
+        group = [s for s in pool if (s["f0"] >= args.f0_split) == female]
         if args.rank == "hf":
             group.sort(key=lambda s: -(s["comb"][2] + s["comb"][3]))
         elif args.rank == "mos":
