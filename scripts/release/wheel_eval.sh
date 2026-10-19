@@ -11,12 +11,29 @@
 # GEN_REMOTE=1 generates on the eval host's CPU instead of this machine's (six workers take about
 # half the speed of a training run here); the package is copied there under the same path, which
 # its config refers to.
+# EVAL_HOST=local generates and scores on this machine (no ssh): the CPU for the wheel, the GPU for
+# the ASR. Generation and scoring of one set alternate, so the GPU is free while the wheel runs;
+# a set that already has its metrics under the tag is skipped.
 cd "$(dirname "$0")/../.." || exit 1
 RUN=$1; STEP=$2; CONFIG=$3; SUFFIX=$4; shift 4
 WHEEL=${WHEEL:-pocket-tts==3.3.0}
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"; H=${EVAL_HOST:-galleria2-direct}; R=co/pocket-tts-ja
 E=$RUN/eval/step$(printf %08d "$STEP")
 PKG=$(dirname "$CONFIG")
+if [ "$H" = local ]; then
+  for s in "$@"; do
+    tag=${s}_rotation_cfg1.0_$SUFFIX
+    if [ ! -f "$E/$tag/metrics.json" ]; then
+      uv run python scripts/eval_tts.py "$RUN" --snapshot "$STEP" --set "$s" --cfg 1.0 --tag-suffix "$SUFFIX" --export-items || exit 1
+      uvx --from "$WHEEL" python scripts/release/wheel_generate.py "$CONFIG" "$E/$tag" --workers "${WORKERS:-6}" || exit 1
+      ${REMOTE_PREFIX:-} uv run python scripts/eval_tts.py "$RUN" --snapshot "$STEP" --set "$s" --cfg 1.0 \
+        --tag-suffix "$SUFFIX" --from-audio --no-wandb || exit 1
+    fi
+    echo "$(date) $tag: $(tr -d '\n ' < "$E/$tag/metrics.json" | cut -c1-300)"
+  done
+  echo WHEEL_EVAL_DONE
+  exit 0
+fi
 if [ -n "${GEN_REMOTE:-}" ]; then
   $SSH $H "mkdir -p $R/$PKG" && rsync -a -e "$SSH" "$PKG/" "$H:$R/$PKG/" || exit 1
 fi
