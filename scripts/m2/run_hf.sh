@@ -10,7 +10,8 @@
 #   4. neural MOS (UTMOS22 strong, UTMOSv2; mos_eval.py, every file high-passed at 40 Hz first)
 #   5. Kana-CER and first-kana errors (kana-whisper), speaker similarity to the recordings, ViSQOL (audio mode, with the
 #      similarity of the 8-12 kHz bands, which the 16 kHz MOS predictors do not see; visqol_eval.py)
-# QUICK=1 skips step 3.
+# QUICK=1 skips step 3. DATA="NAME=MANIFEST:AUDIO_DIR:WEIGHT ..." (space-separated) replaces the training sources
+# (the CC runs of docs/plans/mimi_ft_cc_plan.md); INIT / INIT_DISC the starting decoder and discriminators.
 #     nohup setsid scripts/m2/run_hf.sh M2H_H1 --high-cross 4000 --high-mode fine --gan-lowpass 4000 \
 #       --spec-band 300 4000 > runs/run_hf_M2H_H1.out 2>&1 < /dev/null &
 # OLD: the earlier working folder of this machine (the adopted run's checkpoint with its discriminators).
@@ -23,6 +24,14 @@ W_EMILIA=${W_EMILIA:-0.5} W_HFC_F=${W_HFC_F:-0.25} W_HFC_M=${W_HFC_M:-0.15} W_JV
 # W_AMITARO > 0 adds the あみたろ ITA corpus (1 speaker, 0.46 h, strong 6-8 kHz harmonics)
 EXTRA_DATA=()
 [ "${W_AMITARO:-0}" != 0 ] && EXTRA_DATA=(--data "amitaro=data/m2/amitaro/manifest.jsonl:data/m2/amitaro/audio:$W_AMITARO")
+SOURCES=(--data "emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:$W_EMILIA"
+  --data "hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:$W_HFC_F"
+  --data "hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:$W_HFC_M"
+  --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" "${EXTRA_DATA[@]}")
+if [ -n "$DATA" ]; then
+  SOURCES=()
+  for d in $DATA; do SOURCES+=(--data "$d"); done
+fi
 echo $$ > "runs/run_hf_$NAME.pid"
 UV=$(command -v uv || echo ~/.local/bin/uv)
 JVS="jvs=data/jvs_ver1/jvs0[0-9][0-9]/parallel100/wav24kHz16bit/VOICEACTRESS100_00[1-5].wav"
@@ -36,10 +45,7 @@ H="${NAME}_$((STEPS / 2000))k"  # the half-way decoder
 for try in 1 2 3 4 5 6 7 8; do
   [ -f "$DEC" ] && break
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $UV run python scripts/m2/train_mimi_decoder.py "runs/$NAME" \
-    --data "emilia=data/m2/emilia_hq/manifest.jsonl:data/m2/emilia_hq/audio:$W_EMILIA" \
-    --data "hfc_f=data/m2/hfc_f/manifest.jsonl:data/m2/hfc_f/audio:$W_HFC_F" \
-    --data "hfc_m=data/m2/hfc_m/manifest.jsonl:data/m2/hfc_m/audio:$W_HFC_M" \
-    --data "jvnv=data/m2/jvnv/manifest.jsonl:data/m2/jvnv/audio:$W_JVNV" "${EXTRA_DATA[@]}" \
+    "${SOURCES[@]}" \
     --valid-glob "$JVS" --init "$INIT" --init-disc "$INIT_DISC" \
     --max-steps "$STEPS" --d-warmup 1000 --warmup 500 --lr 5e-5 --lr-d 2e-4 --batch-size 16 --max-seconds 8 \
     --save-every 2500 --valid-every 500 --w-spec 200 --no-wandb "$@" >> "runs/$NAME.log" 2>&1 < /dev/null
