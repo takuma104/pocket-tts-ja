@@ -21,6 +21,7 @@ from torch import nn
 from torch.nn.utils.parametrizations import weight_norm
 
 from pocket_tts.models.mimi import MimiModel
+from pocket_tts.modules.conv import StreamingConv1d, StreamingConvTranspose1d
 from pocket_tts.modules.seanet import SEANetDecoder, SEANetResnetBlock
 from pocket_tts.modules.stateful_module import increment_steps, init_states
 from training.modules.utils import stamp_state_names
@@ -91,14 +92,92 @@ def expand_residual_layers(mimi: MimiModel, n_residual_layers: int) -> None:
     stamp_state_names(mimi)
 
 
+def _copies(old: int, new: int, generator: torch.Generator) -> torch.Tensor:
+    """For each of `new` channels, the old channel it copies: the old ones first, then random repeats."""
+    assert new >= old, (old, new)
+    extra = torch.randperm(old, generator=generator)[: new - old] if new - old <= old else torch.randint(
+        old, (new - old,), generator=generator)
+    return torch.cat([torch.arange(old), extra])
+
+
+def _split(weight: torch.Tensor, axis: int, source: torch.Tensor, noise: float, generator: torch.Generator) -> torch.Tensor:
+    """`weight` with its input channels (`axis`) widened to `source`: each copy gets 1 / (number of copies) of the old
+    weights, plus noise that sums to zero over the copies of each old channel."""
+    counts = torch.bincount(source, minlength=weight.shape[axis]).to(weight.dtype)
+    shape = [1] * weight.dim()
+    shape[axis] = -1
+    out = weight.index_select(axis, source) / counts[source].view(shape)
+    eps = torch.randn(out.shape, generator=generator, dtype=weight.dtype) * noise * weight.std()
+    sums = torch.zeros_like(weight).index_add_(axis, source, eps)
+    return out + eps - (sums / counts.view(shape)).index_select(axis, source)
+
+
+def decoder_width(decoder: SEANetDecoder) -> int:
+    """`n_filters` of a SEANet decoder (the channels of its last stage)."""
+    return decoder.model[-1].conv.in_channels
+
+
+def widen_decoder(mimi: MimiModel, n_filters: int, seed: int = 0, noise: float = 0.1) -> None:
+    """Give the SEANet decoder `n_filters` base channels (every stage scales with it), keeping its output.
+
+    Net2WiderNet (Chen et al. 2016): each added channel copies one old channel of its layer (incoming weights and
+    bias), and the layers that read it split their weights between the copies, so the copies hold equal values and the
+    output is unchanged. A residual stream duplicates the same channels in the upsampling layer and in every block's
+    last convolution, so `x + block(x)` stays consistent. The split gets zero-sum noise (`noise` x the tensor's std):
+    the sum, and so the output, is kept, but the copies get different gradients (an even split would keep them
+    identical under Adam).
+    """
+    old: SEANetDecoder = mimi.decoder
+    if n_filters == decoder_width(old):
+        return
+    blocks = [layer for layer in old.model if isinstance(layer, SEANetResnetBlock)]
+    first_block = blocks[0].block[1]
+    assert first_block.conv.dilation[0] == 1 and (len(blocks) <= len(old.ratios) or blocks[1].block[1].conv.dilation[0] == 2)
+    new = SEANetDecoder(
+        channels=old.channels, dimension=old.dimension, n_filters=n_filters, n_residual_layers=residual_layers(old),
+        ratios=old.ratios, kernel_size=old.model[0].conv.kernel_size[0],
+        last_kernel_size=old.model[-1].conv.kernel_size[0], residual_kernel_size=first_block.conv.kernel_size[0],
+        dilation_base=2, pad_mode=old.model[0].pad_mode,
+        compress=first_block.conv.in_channels // first_block.conv.out_channels,
+    )
+    generator = torch.Generator().manual_seed(seed)
+    stream = torch.arange(old.dimension)  # the old channel behind each channel of the current activation
+
+    def copy_conv(src: nn.Conv1d | nn.ConvTranspose1d, dst: nn.Conv1d | nn.ConvTranspose1d, inputs: torch.Tensor,
+                  outputs: torch.Tensor) -> None:
+        in_axis, out_axis = (0, 1) if isinstance(src, nn.ConvTranspose1d) else (1, 0)
+        weight = src.weight.detach().float().cpu()
+        weight = _split(weight, in_axis, inputs, noise, generator).index_select(out_axis, outputs)
+        dst.weight.data.copy_(weight)
+        dst.bias.data.copy_(src.bias.detach().float().cpu()[outputs])
+
+    for src, dst in zip(old.model, new.model, strict=True):
+        if isinstance(src, StreamingConv1d):
+            outputs = _copies(src.conv.out_channels, dst.conv.out_channels, generator)
+            copy_conv(src.conv, dst.conv, stream, outputs)
+            stream = outputs
+        elif isinstance(src, StreamingConvTranspose1d):
+            outputs = _copies(src.convtr.out_channels, dst.convtr.out_channels, generator)
+            copy_conv(src.convtr, dst.convtr, stream, outputs)
+            stream = outputs
+        elif isinstance(src, SEANetResnetBlock):
+            hidden = _copies(src.block[1].conv.out_channels, dst.block[1].conv.out_channels, generator)
+            copy_conv(src.block[1].conv, dst.block[1].conv, stream, hidden)
+            copy_conv(src.block[3].conv, dst.block[3].conv, hidden, stream)
+    weight = old.model[0].conv.weight
+    mimi.decoder = new.to(device=weight.device, dtype=weight.dtype)
+    stamp_state_names(mimi)
+
+
 def load_decoder(mimi: MimiModel, path: Path) -> None:
     """Replace the decode side of `mimi` with a fine-tuned one (file from `decoder_state`).
 
-    A file from a decoder with more residual blocks per stage expands `mimi` to match first. The
+    A file from a decoder with more residual blocks per stage or more channels expands `mimi` to match first. The
     tensors of a harmonic head (pocket_tts_ja.harmonic) are left to harmonic.load_harmonic_head."""
     state = {k: v for k, v in safetensors.torch.load_file(str(path)).items() if not k.startswith("mimi.harmonic.")}
     last = max(int(name.split(".")[3]) for name in state if name.startswith("mimi.decoder.model."))
     expand_residual_layers(mimi, (last + 1 - 3) // len(mimi.decoder.ratios) - 2)  # entries: 1 + stages * (2 + n) + 2
+    widen_decoder(mimi, state[f"mimi.decoder.model.{last}.conv.weight"].shape[1])
     own = mimi.state_dict()
     expected = {f"mimi.{module}.{name}" for module in DECODER_MODULES for name in getattr(mimi, module).state_dict()}
     assert set(state) == expected, f"{path}: not a decoder file ({len(set(state) ^ expected)} names differ)"

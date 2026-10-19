@@ -70,6 +70,7 @@ from pocket_tts_ja.codec_ft import (
     generator_loss,
     global_rms_loss,
     load_decoder,
+    widen_decoder,
     zero_phase_highpass,
 )
 from pocket_tts_ja.harmonic import (
@@ -387,6 +388,8 @@ def main() -> None:
                              "(codec_ft.VoicingBlendMelLoss: fricatives keep their level, the source cannot make them)")
     parser.add_argument("--residual-layers", type=int, default=1,
                         help="residual blocks per upsampling stage of the SEANet decoder (added ones start as identities)")
+    parser.add_argument("--n-filters", type=int, default=None,
+                        help="widen the SEANet decoder to these base channels (64 in Mimi; the output is kept, Net2WiderNet)")
     parser.add_argument("--gan-lowpass", type=float, default=0.0,
                         help="Hz; the discriminators see both signals low-passed (with --high-cross: they would "
                              "ask for the recording's high band again)")
@@ -425,6 +428,8 @@ def main() -> None:
     if args.init is not None:
         load_decoder(mimi, args.init)
     expand_residual_layers(mimi, args.residual_layers)
+    if args.n_filters is not None:
+        widen_decoder(mimi, args.n_filters, seed=args.seed)
     hop = round(sample_rate / mimi.encoder_frame_rate)
     head = None
     if harmonic is not None:
