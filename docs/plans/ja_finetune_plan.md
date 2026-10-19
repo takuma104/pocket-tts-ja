@@ -242,7 +242,16 @@ ChatGPT案をそのまま骨格にする。
       | D0-CC 50k（`japanese_24l`） | 93.34 / **94.08**% | 2 / 0 | 93.5 / 93.1% | 68.5% | 2.48 / 2.54% | 2.67 / 2.49% | 0.547 / 0.550 | 0・0 / 0・0 | 8.1% / 0.8% |
       | 本線 1 回目の公開（元の Mimi）6 層 / 24 層 | 94.15 / 94.73%、93.31 / 94.06% | | | | | | | | |
 
-      alba（CLI の既定の声）で D1-CC の JSUT は 2.05%（JVS の声 2.49%、wheel）。short の Kana-CER は D1-CC 4.2 / 4.1%、D0-CC 6.0 / 5.2%。short の末尾の短い音・切れは D1-CC wheel 8.1% / 0%、D0-CC 3 フレームで GPU 5.8% / 0.6%、wheel 8.1% / 1.7%。wheel と GPU の差は揺れの範囲で、公式 wheel 3.3.0 で読んでも同じ。カードでは 6 層（`japanese`）を勧める（JKYB の rotation・JVS・類似度・short で 24 層以上、jvs001 は同等）。カードの教師の行（580k、CFG 2.0、JKYB 全文 2 通り）は空いた GPU で `runs/run_bcc_teacher_jkyb.sh`（10/20 3:38〜）。
+      alba（CLI の既定の声）で D1-CC の JSUT は 2.05%（JVS の声 2.49%、wheel）。short の Kana-CER は D1-CC 4.2 / 4.1%、D0-CC 6.0 / 5.2%。short の末尾の短い音・切れは D1-CC wheel 8.1% / 0%、D0-CC 3 フレームで GPU 5.8% / 0.6%、wheel 8.1% / 1.7%。wheel と GPU の差は揺れの範囲で、公式 wheel 3.3.0 で読んでも同じ。カードでは 6 層（`japanese`）を勧める（JKYB の rotation・JVS・類似度・short で 24 層以上、jvs001 は同等）。カードの教師の行（580k、CFG 2.0、JKYB 全文 2 通り、`runs/run_bcc_teacher_jkyb.sh`）: **92.82 / 93.82%**（蒸留した 2 本はどちらも教師以上。本線の教師は 92.97 / 93.68%）。
+    - **voices/ の 10 声で JSUT（公式 wheel、CPU、10/20 5:07）**: 声ごとに 100 文。`eval_tts.py --from-audio` が items.json をセットの声で書き直していて、最初の声ごとの表は JVS の 4 声での集計になっていた（生成は 10 声で行われている: 割り当てた声との ECAPA 類似度 0.659、JVS の声とは 0.132）。割り当ては `items_voices.json` に残すようにし（`run_voices_cc.sh`）、`per_prompt_cer.py` に `--items`、声ごとの類似度に `scripts/release/voice_similarity.py` を足して集計し直した。
+
+      | | JSUT Kana-CER（10 声） | 声ごとの範囲 | 一番悪い声 | 声との類似度 |
+      |---|---:|---:|---:|---:|
+      | D1-CC 160k | 2.33% | 1.31〜3.38% | male_01 3.38% | 0.659 |
+      | 本線 D1b 120k（元の Mimi） | 2.17% | 1.26〜3.13% | male_01 3.13% | 0.645 |
+      | D0-CC 50k | 2.51% | 1.42〜4.06% | male_01 4.06% | 0.612 |
+
+      どの声でも CC の 2 本は本線と同じ程度に読める（JVS の 4 声では D1-CC 2.49%）。voices/ はそのまま使える。カードの TBD は無くなり、`stage_cc_repo.sh` の試しは STAGE_OK。
     - **push の後の確認**: `scripts/release/hub_check.sh REPO REV LOCAL_DIR`（新しいキャッシュで hub から公式 wheel で読んで 1 文生成し、落ちてきたファイルの sha256 をローカルのパッケージと比べる。公開中の本線 `119685f` で動作を確認: HUB_CHECK_OK）。
     - **配布物の組み立て**: `scripts/release/stage_cc_repo.sh OUT NAME [DECODER] [REVISION]`（`REPO` の既定は `takuma104/pocket-tts-ja-cc`）。2 本を `--repo` 付きでパッケージし直し、voices/ と README（カードの下書きからコメントを除いたもの）、`.gitattributes`（LFS）を置く。確認: ウェイトと tokenizer の sha256 が評価したパッケージと同じ、yaml の違いはパスだけ、voices/ 以外に音声や jvs の名前のファイルが無い、README に TBD が無い。手順は 1. REVISION なしで組み立ててウェイト・tokenizer・voices を commit / push（W）、2. REVISION=W で yaml と README を commit / push（C）、3. `hub_check.sh REPO C OUT`。`exp/release_cc/stage_test` で試した（sha256 は 3 つとも評価したものと同じ、残りは教師の行の TBD だけ）。
     - **メモ**: 10/20 0:06 にマシンが再起動していて、セッションの scratchpad（/tmp）が空になっていた（以前の確認用スクリプトとカードの下書きは消えた）。必要なものはリポジトリに置き直した（ユーザーの依頼「/tmp に必要なファイルがあればリポジトリ内に移動」）。上流の main は 3.3.0 の後に 9 コミット進んでいる（コミュニティモデルの一覧に本線が載った #368、既定の英語モデルと既定の声の更新）。推論のコードは変わっていない（`tts_model.py` は docstring だけ）。PyPI は 3.3.0 のまま。

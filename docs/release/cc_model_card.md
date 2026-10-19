@@ -68,7 +68,8 @@ audio = model.generate_audio(voice, "こんにちは。今日はいい天気で�
 - `--voice` is a recording of the voice to clone (a few seconds of clean speech). `voices/` has ten
   synthetic voices (five female, five male, described in `voices/voices.json`), made with
   [Irodori-TTS-v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) from text
-  descriptions, so they are nobody's voice. Without `--voice` the CLI clones its default voice
+  descriptions, so they are nobody's voice. With them `japanese` reads JSUT at a Kana-CER of
+  2.33% (1.3 to 3.4% per voice). Without `--voice` the CLI clones its default voice
   (alba, an English speaker), which reads Japanese as well (JSUT Kana-CER 2.05%, against 2.49%
   with the JVS prompts). The pre-made voices cannot be selected by name (`--voice alba`): they
   are embeddings computed with the official weights.
@@ -93,7 +94,7 @@ whose target word is read correctly.
 |---|---:|---:|
 | `japanese` | **93.93%** | 93.96% |
 | `japanese_24l` | 93.34% | **94.08%** |
-| 24-layer teacher before the guidance was distilled (CFG 2.0, not released) | TBD | TBD |
+| 24-layer teacher before the guidance was distilled (CFG 2.0, not released) | 92.82% | 93.82% |
 | *CC BY-NC sibling, same decoder* ([first release](https://huggingface.co/takuma104/pocket-tts-ja/tree/ca9b00950babd912554d7de895761f4db1782b5f)): `japanese` | 94.15% | 94.73% |
 | *CC BY-NC sibling, same decoder:* `japanese_24l` | 93.31% | 94.06% |
 
