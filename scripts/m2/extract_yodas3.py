@@ -11,7 +11,8 @@ low-pass) with DNSMOS P.835 at least --min-ovrl / --min-sig / --min-bak.
     uv run python scripts/m2/extract_yodas3.py            # reads it, writes <out>/audio/<id>.wav
 
 Each worker takes one tar shard, reads its index and only the videos it needs, decodes them (PyAV, 48 kHz, channels
-averaged as process_shard.py does) and writes the clips resampled to 24 kHz (soxr). Clips already written are skipped.
+averaged as process_shard.py does) up to its last clip, holding only the audio its clips still need, and writes the
+clips resampled to 24 kHz (soxr). Clips already written are skipped.
 """
 
 import argparse
@@ -21,6 +22,7 @@ import multiprocessing as mp
 import os
 import tarfile
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -70,24 +72,51 @@ def select(args: argparse.Namespace) -> None:
           f"{len({r['video'] for r in rows})} videos, {len({r['shard'] for r in rows})} shards", flush=True)
 
 
-def decode(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
-    """A webm/opus member as mono float32 (channels averaged) and its sample rate."""
+def mono(frame: Any) -> npt.NDArray[np.float32]:
+    """One decoded audio frame with its channels averaged (as process_shard.py does)."""
+    a = frame.to_ndarray()
+    if a.ndim == 2 and a.shape[0] > 1 and frame.format.is_planar:
+        a = a.mean(axis=0)
+    elif a.ndim == 2 and not frame.format.is_planar:
+        a = a.reshape(-1, len(frame.layout.channels)).mean(axis=1)
+    else:
+        a = a.reshape(-1)
+    return a.astype(np.float32)
+
+
+def cut_clips(data: bytes, rows: list[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], npt.NDArray[np.float32], int]]:
+    """(row, clip at the stream's rate, rate) for the rows of one webm/opus member, decoding it only up to its last
+    clip and keeping only the audio from the earliest clip still to cut (a few seconds, whatever the video's length)."""
     import av
 
-    chunks = []
+    rows = sorted(rows, key=lambda r: r["start"])
+    k = 0
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.audio[0]
         sr = stream.rate
+        buf: list[npt.NDArray[np.float32]] = []
+        buf_start = buf_len = 0  # samples of the video before buf, in buf
+
+        def take(row: dict[str, Any]) -> npt.NDArray[np.float32]:
+            audio = np.concatenate(buf) if buf else np.zeros(0, np.float32)
+            buf[:] = [audio]
+            return audio[max(round(row["start"] * sr) - buf_start, 0) : max(round(row["end"] * sr) - buf_start, 0)]
+
         for frame in container.decode(stream):
-            a = frame.to_ndarray()
-            if a.ndim == 2 and a.shape[0] > 1 and frame.format.is_planar:
-                a = a.mean(axis=0)
-            elif a.ndim == 2 and not frame.format.is_planar:
-                a = a.reshape(-1, len(frame.layout.channels)).mean(axis=1)
-            else:
-                a = a.reshape(-1)
-            chunks.append(a.astype(np.float32))
-    return (np.concatenate(chunks) if chunks else np.zeros(0, np.float32)), sr
+            buf.append(mono(frame))
+            buf_len += len(buf[-1])
+            while k < len(rows) and buf_start + buf_len >= round(rows[k]["end"] * sr):
+                yield rows[k], take(rows[k]), sr
+                k += 1
+            if k == len(rows):
+                return
+            drop = min(round(rows[k]["start"] * sr) - buf_start, buf_len)
+            if drop > 10 * sr:  # now and then, forget what no clip left needs
+                audio = np.concatenate(buf)[drop:]
+                buf[:] = [audio]
+                buf_start, buf_len = buf_start + drop, len(audio)
+        for row in rows[k:]:  # past the end of the stream: what there is
+            yield row, take(row), sr
 
 
 def extract_shard(job: tuple[Path, Path, list[dict[str, Any]]]) -> tuple[str, int, int]:
@@ -104,21 +133,20 @@ def extract_shard(job: tuple[Path, Path, list[dict[str, Any]]]) -> tuple[str, in
             video = member.name.rsplit("/", 1)[-1].removesuffix(".webm")
             if not member.name.endswith(".webm") or video not in by_video:
                 continue
+            todo = len(by_video[video])
             try:
-                wav, sr = decode(tf.extractfile(member).read())
-            except Exception:  # noqa: BLE001 - a corrupt member: skip its clips
-                errors += len(by_video[video])
-                continue
-            for row in by_video[video]:
-                clip = wav[round(row["start"] * sr) : round(row["end"] * sr)]
-                if len(clip) < sr:
-                    errors += 1
-                    continue
-                clip = soxr.resample(clip, sr, SR) if sr != SR else clip
-                tmp = audio_dir / f".{row['id']}.wav"  # renamed when complete: a stopped run leaves no partial clip
-                sf.write(tmp, np.clip(clip, -1.0, 1.0), SR, subtype="PCM_16", format="WAV")
-                os.replace(tmp, audio_dir / f"{row['id']}.wav")
-                written += 1
+                for row, clip, sr in cut_clips(tf.extractfile(member).read(), by_video[video]):
+                    todo -= 1
+                    if len(clip) < sr:
+                        errors += 1
+                        continue
+                    clip = soxr.resample(clip, sr, SR) if sr != SR else clip
+                    tmp = audio_dir / f".{row['id']}.wav"  # renamed when complete: a stopped run leaves no partial clip
+                    sf.write(tmp, np.clip(clip, -1.0, 1.0), SR, subtype="PCM_16", format="WAV")
+                    os.replace(tmp, audio_dir / f"{row['id']}.wav")
+                    written += 1
+            except Exception:  # noqa: BLE001 - a corrupt member: skip the clips left
+                errors += todo
     return tar_path.name, written, errors
 
 
