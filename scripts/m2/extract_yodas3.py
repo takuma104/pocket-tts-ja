@@ -18,6 +18,7 @@ import argparse
 import io
 import json
 import multiprocessing as mp
+import os
 import tarfile
 from collections import defaultdict
 from pathlib import Path
@@ -114,7 +115,9 @@ def extract_shard(job: tuple[Path, Path, list[dict[str, Any]]]) -> tuple[str, in
                     errors += 1
                     continue
                 clip = soxr.resample(clip, sr, SR) if sr != SR else clip
-                sf.write(audio_dir / f"{row['id']}.wav", np.clip(clip, -1.0, 1.0), SR, subtype="PCM_16")
+                tmp = audio_dir / f".{row['id']}.wav"  # renamed when complete: a stopped run leaves no partial clip
+                sf.write(tmp, np.clip(clip, -1.0, 1.0), SR, subtype="PCM_16", format="WAV")
+                os.replace(tmp, audio_dir / f"{row['id']}.wav")
                 written += 1
     return tar_path.name, written, errors
 
