@@ -165,6 +165,18 @@ C2 の decoder と識別器から、C1 で決めたデータで HF の段を回�
 - 目安との比較: UTMOSv2 は soup12hp −0.02 以内に届かない（−0.065）。UTMOS22 は keep4k −0.02 以上に届かない（−0.037）。Kana-CER（4.64%）と類似度（0.810）は満たす。類似度、ViSQOL、NSIM 8–12k は NC 版より録音に近い。
 - **次（C3 の 2 回目、`runs/lane_c3b.sh`）**: 学習データの UTMOSv2 をさらに上げる。UTMOSv2 の上位を性別ごとに 4,000（m4、女性 3.60 / 男性 3.60、各 7h）と 3,000（m3、3.64 / 3.64、各 5.3h）。合成音声の 2 本は除いた。run は `M2CH_m4`、`M2CH_m3`（並べて約 1.5 時間）。
 - 試聴ページ（ローカル）: `exp/listening/m2c_recon1`（JVS 再構成、m2h_recon7 と同じ 6 文、録音 / keep4k / soup12hp / M2C_base / M2CH_soupE2、各ファイルの UTMOSv2）。
+- **TTS の出力**（公開中の生徒 D1b 120k、CFG 1.0、`runs/lane_c3_tts.sh`）: jvs_bal では soup12hp と並ぶが、short では 0.09 低い。
+
+| decoder | jvs_bal UTMOSv2 Δkeep4k（女性） | jvs_bal UTMOS22 | short UTMOSv2 | short UTMOS22 | Kana-CER（jvs_bal / short） |
+|---|---:|---:|---:|---:|---:|
+| keep4k | 0 | 0 | 0 | 0 | 2.32% / 4.54% |
+| soup12hp | +0.279（+0.434） | +0.006 | +0.350 | +0.013 | 2.13% / 4.61% |
+| M2C_base | +0.098（+0.112） | +0.009 | +0.040 | −0.012 | 2.22% / 4.94% |
+| **M2CH_soupE2** | **+0.274（+0.403）** | **+0.032** | +0.256 | +0.005 | **2.05% / 4.34%** |
+
+  - soup12hp との同じ文の差: jvs_bal −0.006 ± 0.015（女性 −0.031）、UTMOS22 +0.027 ± 0.011。short −0.095 ± 0.020、UTMOS22 −0.008。
+  - 話者類似度（jvs_bal、ECAPA）は M2CH_soupE2 0.611 で、soup12hp 0.572、keep4k 0.577、M2C_base 0.580 より高い。
+  - 試聴ページ（ローカル）: `exp/listening/m2c_student1`（生徒の TTS、keep4k / soup12hp / M2C_base / M2CH_soupE2）。
 
 比べる相手: p100E、soup12hp。指標: JVS 再構成の UTMOSv2 / UTMOS22（hp40）、Kana-CER、類似度、ViSQOL の 8–12kHz、TTS の出力（公開中の生徒 D1b 120k に加えて、CC 版の生徒 D1-CC があればそれでも）。試聴ページ（録音 / keep4k / soup12hp / CC 版）。
 
