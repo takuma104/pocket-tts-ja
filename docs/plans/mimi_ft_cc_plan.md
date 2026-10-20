@@ -264,7 +264,33 @@ C2 の decoder と識別器から、C1 で決めたデータで HF の段を回�
   - soup4 − soup2: +0.008 ± 0.001（UTMOS22 +0.005）。
   - TTS（生徒 D1b 120k、soup12hp との同じ文の差）: jvs_bal **+0.095 ± 0.014**（UTMOS22 +0.039）、short **+0.001 ± 0.020**。Kana-CER は 1.96% / 4.00%、話者類似度は 0.604。
   - **公開する CC 版の decoder は M2CH2_soup4**（`runs/M2H_soups/M2CH2_soup4.safetensors`）。再構成の UTMOSv2 は目安を満たし、UTMOS22 だけ届かない（−0.029）。TTS では UTMOSv2 も UTMOS22 も soup12hp と並ぶか上回る。
-- **次（C5、`runs/lane_c5.sh`）**: main の CC BY 版の生徒で TTS を確かめる。生徒は D1-CC 160k（6 層）と D0-CC 50k（24 層、EOS の後 3 フレーム）で、galleria からコピーした。decoder は元の Mimi（いまのリリースの構成）、M2CH2_soup2 / soup4、soup12hp（参考）。jvs_bal と short の UTMOSv2 / UTMOS22、Kana-CER、話者類似度を元の Mimi と比べる。
+
+
+### C5: main の CC BY 版の生徒で TTS
+
+main の CC BY 版の生徒は、D1-CC 160k（6 層）と D0-CC 50k（24 層、EOS の後 3 フレーム）。galleria からコピーした（`runs/D1_cc_6l`、`runs/D0_cc_24l`、tokenizer `data/tokenizer/ja_cc_4k.model`）。decoder は元の Mimi（いまのリリースの構成）、soup12hp（NC、参考）、M2CH2_soup2 / soup4 の 4 つ。jvs_bal（100 文）と short（172 文）で、voice は rotation、CFG 1.0（`runs/lane_c5.sh`、10/20 23:22）。
+
+| 生徒 / セット | decoder | UTMOSv2 Δmimi | soup12hp との差 | UTMOS22 Δmimi | Kana-CER | 話者類似度 |
+|---|---|---:|---:|---:|---:|---:|
+| D1-CC jvs_bal | mimi | 0 | | 0 | 2.44% | 0.560 |
+| | soup12hp | +0.320 | | −0.033 | 2.14% | 0.629 |
+| | **M2CH2_soup4** | **+0.369** | **+0.049 ± 0.015** | −0.019 | 2.18% | **0.651** |
+| D1-CC short | mimi | 0 | | 0 | 4.16% | |
+| | soup12hp | +0.356 | | −0.010 | 3.57% | |
+| | **M2CH2_soup4** | **+0.357** | +0.001 ± 0.021 | +0.007 | 4.24% | |
+| D0-CC jvs_bal | mimi | 0 | | 0 | 2.67% | 0.547 |
+| | soup12hp | +0.301 | | −0.011 | 2.10% | 0.625 |
+| | **M2CH2_soup4** | **+0.347** | **+0.047 ± 0.019** | +0.001 | 2.47% | **0.645** |
+| D0-CC short | mimi | 0 | | 0 | 5.99% | |
+| | soup12hp | +0.423 | | −0.019 | 3.55% | |
+| | **M2CH2_soup4** | **+0.420** | −0.003 ± 0.023 | −0.020 | 3.95% | |
+
+- UTMOSv2 は元の Mimi より +0.35〜0.42。soup12hp とは jvs_bal で +0.05、short で並ぶ。UTMOS22 は元の Mimi と ±0.02 の中。
+- soup2 は short で soup12hp より 0.036 低い（D1-CC と D0-CC の両方）。soup4 で並ぶ。
+- Kana-CER は D0-CC の short で 5.99% → 3.95%、jvs_bal で 2.67% → 2.47%。D1-CC は jvs_bal で 2.44% → 2.18%、short は 4.16% → 4.24% で変わらない（172 文で揺れが大きい）。
+- 話者類似度（ECAPA、jvs_bal）は 0.55〜0.56 から 0.65 に上がる。
+- 試聴ページ（ローカル）: `exp/listening/m2c_cc_students`。D1-CC と D0-CC それぞれで、元の Mimi / soup12hp / M2CH2_soup4。
+- **リリースへの組み込み**: main の `runs/run_release_cc.sh NAME DECODER`（galleria）は decoder を差し替えて、パッケージと評価（GPU の eval と wheel 3.3.0）を作り直せる。DECODER は `runs/M2H_soups/M2CH2_soup4.safetensors`（41MB）。galleria では実験中なので、こちらからは動かしていない。組み込むかどうかと、いつ動かすかはユーザーが決める。
 
 比べる相手: p100E、soup12hp。指標: JVS 再構成の UTMOSv2 / UTMOS22（hp40）、Kana-CER、類似度、ViSQOL の 8–12kHz、TTS の出力（公開中の生徒 D1b 120k に加えて、CC 版の生徒 D1-CC があればそれでも）。試聴ページ（録音 / keep4k / soup12hp / CC 版）。
 
