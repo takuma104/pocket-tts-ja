@@ -230,6 +230,7 @@ C2 の decoder と識別器から、C1 で決めたデータで HF の段を回�
 - **CC 版の候補は M2CH_soup2**（m3 + m4 の 10k）。TTS では soup12hp と並ぶか上回り、Kana-CER（short）と話者類似度は良い。再構成の UTMOS22 は目安に届かない（−0.034）が、TTS では差が出ない。
 - **公開する版（C4、`runs/lane_c4.sh`）**: 土台の M2C_base は合成音声の動画を見つける前のリスト（YODAS3 90,241 クリップのうち 167）で学習した。そこで、土台をその動画を除いたリスト（90,074）で作り直す（M2C_base2）。そこから m3 と m4 で HF の段を回し、平均を M2CH2_soup2 とする。再構成と TTS を M2CH_soup2 と比べる（10/20 15:35 開始、合わせて 6 時間ほど）。
 - 試聴ページ（ローカル）: `exp/listening/m2c_recon2`（JVS 再構成、m2c_recon1 と同じ 6 文、録音 / keep4k / soup12hp / M2CH_soupE2 / M2CH_soup2）、`exp/listening/m2c_student2`（生徒の TTS、keep4k / soup12hp / M2CH_soupE2 / M2CH_soup2）。
+- **試聴（ユーザー、10/20）**: 「ほぼ soup12hp / M2CH_soupE2 / M2CH_soup2 は差が感じられませんでした」。1 回目（soupE2、再構成で −0.065）も含めて、聴いて区別できる差はない。
 
 ### C4: 公開する版（合成音声の動画を除いて土台から作り直す）
 
@@ -251,6 +252,7 @@ C2 の decoder と識別器から、C1 で決めたデータで HF の段を回�
   - short: −0.024 ± 0.020（M2CH_soup2 は −0.003）。
   - Kana-CER は jvs_bal 1.99% / short 4.06%、話者類似度は 0.603。
 - **次（`runs/lane_c4b.sh`、10/20 21:28 開始）**: M2C_base2 から m2 と m3 の `--seed 1` を足し、4 本の平均（M2CH2_soup4）を見る。
+- **次（C5、`runs/lane_c5.sh`）**: main の CC BY 版の生徒で TTS を確かめる。生徒は D1-CC 160k（6 層）と D0-CC 50k（24 層、EOS の後 3 フレーム）で、galleria からコピーした。decoder は元の Mimi（いまのリリースの構成）、M2CH2_soup2 / soup4、soup12hp（参考）。jvs_bal と short の UTMOSv2 / UTMOS22、Kana-CER、話者類似度を元の Mimi と比べる。
 
 比べる相手: p100E、soup12hp。指標: JVS 再構成の UTMOSv2 / UTMOS22（hp40）、Kana-CER、類似度、ViSQOL の 8–12kHz、TTS の出力（公開中の生徒 D1b 120k に加えて、CC 版の生徒 D1-CC があればそれでも）。試聴ページ（録音 / keep4k / soup12hp / CC 版）。
 
