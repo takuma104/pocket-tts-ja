@@ -39,9 +39,9 @@ text = re.sub(r"\A<!--.*?-->\n", "", text, flags=re.S)
 text = re.sub(r" ?<!-- DECODER.*?-->", "", text)
 open(sys.argv[2], "w").write(text)
 EOF
-if [ ! -f "$OUT/.gitattributes" ]; then
-  printf '%s filter=lfs diff=lfs merge=lfs -text\n' '*.safetensors' '*.model' '*.wav' > "$OUT/.gitattributes"
-fi
+for pat in '*.safetensors' '*.model' '*.wav'; do  # the hub refuses binary files outside LFS
+  grep -q -F "$pat filter=lfs" "$OUT/.gitattributes" 2>/dev/null || echo "$pat filter=lfs diff=lfs merge=lfs -text" >> "$OUT/.gitattributes"
+done
 
 fail=0
 for pair in "$P6/japanese/model.safetensors:$OUT/japanese/model.safetensors" \
