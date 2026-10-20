@@ -30,6 +30,8 @@ weights are CC BY 4.0, so they can be used commercially, with attribution (see L
 sibling trained with more data, under CC BY-NC 4.0, is
 [takuma104/pocket-tts-ja](https://huggingface.co/takuma104/pocket-tts-ja). Code, training recipe
 and the full log of results: [github.com/takuma104/pocket-tts-ja](https://github.com/takuma104/pocket-tts-ja).
+How the data was built and the models were trained: technical report ([English](https://github.com/takuma104/pocket-tts-ja/blob/main/docs/report/pocket_tts_ja_report_en.pdf),
+[日本語](https://github.com/takuma104/pocket-tts-ja/blob/main/docs/report/pocket_tts_ja_report_ja.pdf)).
 
 - Runs with the **stock `pocket-tts` package** (3.3.0 or later), on CPU, with no code changes.
 - Takes **plain Japanese text** (kanji and kana as written). There is no G2P front end; the model
@@ -46,6 +48,7 @@ and the full log of results: [github.com/takuma104/pocket-tts-ja](https://github
 `pocket-tts`（3.3.0 以降）にそのまま読み込め、CPU で動きます。入力は漢字かな交じりの文で、読みはモデルが
 決めます（G2P は使いません）。数秒の参照音声で声を指定します。Emilia（非商用）も使ったモデルは
 [takuma104/pocket-tts-ja](https://huggingface.co/takuma104/pocket-tts-ja)（CC BY-NC 4.0）にあります。
+学習データの作り方と学習の方法は[テクニカルレポート](https://github.com/takuma104/pocket-tts-ja/blob/main/docs/report/pocket_tts_ja_report_ja.pdf)にまとめています。
 
 ## Usage
 
@@ -67,8 +70,8 @@ audio = model.generate_audio(voice, "こんにちは。今日はいい天気で�
   synthetic voices (five female, five male, described in `voices/voices.json`), made with
   [Irodori-TTS-v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) from text
   descriptions, so they are nobody's voice. With them `japanese` reads JSUT at a Kana-CER of
-  2.33% (1.3 to 3.4% per voice). Without `--voice` the CLI clones its default voice
-  (alba, an English speaker), which reads Japanese as well (JSUT Kana-CER 2.05%, against 2.49%
+  2.23% (1.3 to 3.4% per voice). Without `--voice` the CLI clones its default voice
+  (alba, an English speaker), which reads Japanese as well (JSUT Kana-CER 2.00%, against 2.23%
   with the JVS prompts). The pre-made voices cannot be selected by name (`--voice alba`): they
   are embeddings computed with the official weights.
 - The config sets the sampling temperature to 0.3, the value every number below was measured
@@ -90,8 +93,8 @@ whose target word is read correctly.
 
 | Model | Prompts: 4 JVS speakers in rotation | Prompt: jvs001 |
 |---|---:|---:|
-| `japanese` | TBD | TBD |
-| `japanese_24l` | TBD | TBD |
+| `japanese` | 94.77% | 94.49% |
+| `japanese_24l` | 94.36% | 94.85% |
 | *Original Mimi decoder:* `japanese` | 93.93% | 93.96% |
 | *Original Mimi decoder:* `japanese_24l` | 93.34% | 94.08% |
 | *Original Mimi decoder:* 24-layer teacher before the guidance was distilled (CFG 2.0, not released) | 92.82% | 93.82% |
@@ -103,18 +106,22 @@ GPU evaluation of the same checkpoint:
 
 | Set | Metric | GPU | Stock package, CPU |
 |---|---|---:|---:|
-| JKYB-mini (1,500 sentences) | accuracy | TBD | TBD |
-| Aozora Bunko ruby (1,000 sentences) | target reading accuracy | TBD | |
-| JSUT (1,000 sentences) | Kana-CER | TBD | TBD |
-| JVS zero-shot (5 male + 5 female speakers, 10 sentences each) | Kana-CER | TBD | TBD |
-| JVS zero-shot | similarity to the speaker's recording of the same sentence (ECAPA) | TBD | TBD |
-| Short texts (172 texts of 2–8 tokens) | did not stop / extra speech | TBD | TBD |
+| JKYB-mini (1,500 sentences) | accuracy | 94.9% | 95.1% |
+| Aozora Bunko ruby (1,000 sentences) | target reading accuracy | 70.7% | |
+| JSUT (1,000 sentences) | Kana-CER | 2.14% | 2.23% |
+| JVS zero-shot (5 male + 5 female speakers, 10 sentences each) | Kana-CER | 2.18% | 2.09% |
+| JVS zero-shot | similarity to the speaker's recording of the same sentence (ECAPA) | 0.651 | 0.650 |
+| Short texts (172 texts of 2–8 tokens) | did not stop / extra speech | 0 / 2 | 0 / 1 |
 
 With the original Mimi decoder the stock package gives JKYB-mini 94.4%, JSUT 2.49% and JVS 2.15% /
-0.560. TBD
+0.560: the fine-tuned decoder mostly raises the similarity to the speakers' recordings (the CC BY-NC
+sibling: 0.575).
 
 `japanese_24l` (3 frames after the end of speech, as in its config) is close on these sets
-(GPU: TBD; stock package on CPU: TBD). TBD
+(GPU: JKYB-mini 94.9%, Aozora Bunko 70.3%, JSUT 2.13%, JVS 2.47% / 0.645, short texts 0 / 0;
+stock package on CPU: JKYB-mini 94.1%, JSUT 2.17%, JVS 2.30% / 0.641, short texts 0 / 0). The two
+models read equally well. `japanese_24l` fails to stop and ends with a short sound a little less
+often (see Limitations); `japanese` is three times smaller and faster.
 
 ## Training
 
@@ -162,12 +169,13 @@ evaluation only.
 
 ## Limitations
 
-- About 6% of the JKYB sentences are still misread, mostly rare readings and words from the
-  appendix of the Joyo kanji table (jukujikun, 86% correct). Numbers, counters and Latin letters
+- About 5% of the JKYB sentences are still misread, mostly rare readings and words from the
+  appendix of the Joyo kanji table (jukujikun, 86 to 88% correct). Numbers, counters and Latin letters
   were not evaluated separately.
 - In 0.04 to 0.07% of the JKYB sentences `japanese` does not end the utterance and keeps
-  generating up to the length limit (`japanese_24l`: 0 to 0.01%).
-- 8 to 10% of the clips end with a short, quiet sound (a breath or a small voice) after a pause.
+  generating up to the length limit (`japanese_24l`: 0 to 0.015%).
+- 6 to 9% of the clips end with a short, quiet sound (a breath or a small voice) after a pause
+  (`japanese` 8 to 9%, `japanese_24l` 6 to 7%, on JKYB-mini).
 - Reading accuracy and speaker similarity depend on the voice prompt.
 - Real Japanese recordings still lose clarity when they pass through the codec (Kana-CER of JVS
   recordings: 3.3% as recorded, 4.7% through Mimi with the fine-tuned decoder; 5.4% with the

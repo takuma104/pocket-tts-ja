@@ -14,8 +14,6 @@
 \setCJKmainfont[Path=fonts/,BoldFont=NotoSerifJP-Bold.otf]{NotoSerifJP-Regular.otf}
 \usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
 \newcommand{\pt}{\,pt}
-% provisional numbers (the CC BY release with its decoder is still being measured)
-\newcommand{\tbd}[1]{\textcolor{red!70!black}{#1}}
 \setlength{\emergencystretch}{1.5em}
 
 \title{\bfseries Pocket TTS Learns Japanese:\\
@@ -48,7 +46,7 @@ training never supervises; supervising them with digital silence removed fillers
 about 10\% of the sentences. Guidance is distilled into the weights, and a 6-layer student reads
 better than its 24-layer teacher. Finally, only the codec's decoder is fine-tuned, so latents and
 voice prompts stay compatible. On the 13,536 sentences of JKYB-Parakeet, the released 6-layer models
-read 94.75\% (trained with Emilia, CC BY-NC) and \tbd{94.77}\% (CC BY data only) of the target words
+read 94.75\% (trained with Emilia, CC BY-NC) and 94.77\% (CC BY data only) of the target words
 correctly.
 \end{abstract}
 
@@ -289,11 +287,12 @@ their teachers: 94.15 / 94.73\% against 92.97 / 93.68\% (main) and 93.93 / 93.96
 (WER 0.76 vs 0.82\%). They fail to stop more often (43 of 13,536 sentences against 6). In bfloat16 the
 6-layer model runs 4.4$\times$ faster than real time on one CPU thread (24 layers: 1.4$\times$).
 
-\textbf{Frames after EOS at release.} A level check of the clip ends showed that half of the 24-layer
+\textbf{Frames after EOS at release.} A level check of the clip ends (original decoder) showed that half of the 24-layer
 CC BY model's short end sounds come after EOS (10.1\% of clips; 2.5\% cut while sounding). With 3
 frames they drop to 7.9\% with 0.7\% cut (0 frames: 5.9\% but 16\% cut), so its config sets 3. The
 6-layer model's sounds come before EOS (9.4--9.8\% at any setting) and listening found them
-unobjectionable, so it keeps the default.
+unobjectionable, so it keeps the default. With the CC BY decoder the released 24- and 6-layer models
+end so in 6.4 and 8.9\% of the clips.
 
 \section{Fine-tuning the decoder}\label{sec:decoder}
 \textbf{Why.} Through Mimi, the kana CER of all JVS~\cite{jvs} read speech rises from 3.16\% to
@@ -357,8 +356,7 @@ within noise (main line \texttt{japanese}: JKYB-mini 95.3\%, JSUT 2.15\%, JVS 1.
 \begin{table}[t]
 \centering\scriptsize\setlength{\tabcolsep}{1.6pt}
 \caption{Released models (GPU evaluation; L: layers; teachers with CFG 2.0). JKYB: all sentences,
-prompts in rotation / jvs001. CER in \%. Short: did not stop / extra speech, of 172. \tbd{Red}:
-provisional.}
+prompts in rotation / jvs001. CER in \%. Short: did not stop / extra speech, of 172.}
 \label{tab:results}
 \begin{tabular}{@{}lrrrrrr@{}}
 \toprule
@@ -368,8 +366,8 @@ Model & JKYB & mini & Aoz. & JSUT & JVS / sim. & Short\\
 6L & 94.75 / 94.84 & 95.1 & 71.3 & 2.28 & 2.32 / .577 & 0 / 1\\
 24L & 94.32 / 94.49 & 94.5 & 71.2 & 2.28 & 2.13 / .586 & 0 / 1\\
 \multicolumn{7}{@{}l}{\emph{CC BY line, CC BY decoder}}\\
-6L & \tbd{94.77 / TBD} & 94.9 & 70.7 & 2.14 & 2.18 / .651 & \tbd{0 / TBD}\\
-24L & \tbd{TBD} & \tbd{TBD} & \tbd{TBD} & \tbd{TBD} & \tbd{TBD} & \tbd{TBD}\\
+6L & 94.77 / 94.49 & 94.9 & 70.7 & 2.14 & 2.18 / .651 & 0 / 2\\
+24L & 94.36 / 94.85 & 94.9 & 70.3 & 2.13 & 2.47 / .645 & 0 / 0\\
 \multicolumn{7}{@{}l}{\emph{Original Mimi decoder}}\\
 Main 6L & 94.15 / 94.73 & 93.8 & 70.0 & 2.39 & 2.58 / .536 & 0 / 1\\
 CC BY 6L & 93.93 / 93.96 & 94.3 & 69.0 & 2.40 & 2.47 / .560 & 0 / 1\\
@@ -394,7 +392,7 @@ Third, \emph{metrics are not enough for the decoder}: every rejected decoder imp
 \textbf{Limitations.} Scores are ASR-based with one seed, and JKYB-mini moves by about
 $\pm$0.5--1\pt{} between evaluations. We ran no controlled ablation of the synthetic share, and the
 synthetic speech carries Irodori's readings and style. The students fail to stop slightly more often
-than the teachers, and 8--10\% of the CC BY clips end in a short, quiet sound.
+than the teachers, and 6--9\% of the CC BY clips end in a short, quiet sound.
 
 \section{Conclusion}
 A drop-in Japanese Pocket TTS needs no change to the runtime. Most of the gain came from the data:
