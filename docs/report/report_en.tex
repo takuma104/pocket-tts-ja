@@ -67,8 +67,8 @@ occur only a few times.
 
 Our goals were: (i)~the model loads in the stock package (3.3.0) with \texttt{--config} and no code
 changes; (ii)~it reads plain Japanese text; (iii)~a 6-layer model runs on CPU; (iv)~besides a line
-trained with the non-commercial Emilia corpus, a second line uses CC BY data only, so that its
-weights can be used commercially. We describe the training data (\S\ref{sec:data}), the training
+trained with the non-commercial Emilia corpus (the \emph{main line} below), a second line, the
+\emph{CC BY line}, uses CC BY data only, so that its weights can be used commercially. We describe the training data (\S\ref{sec:data}), the training
 recipe and the supervision of the utterance end (\S\ref{sec:train}), distillation (\S\ref{sec:distill}),
 the decoder (\S\ref{sec:decoder}) and the released models (\S\ref{sec:results}), which are on Hugging
 Face\footnote{\url{https://huggingface.co/takuma104/pocket-tts-ja} (CC BY-NC 4.0) and
@@ -197,9 +197,10 @@ S9 & 2--8 tokens, explicit duration & 31k (69\%) & 11\\
 \textbf{Effect.} Each set moved the plateau (Fig.~\ref{fig:training}). 10\% of S3 took JKYB-mini
 from 72.3\% to 77.2\% within 7k steps (JSUT CER 6.95$\to$5.36\%). S7 raised the readings it topped up
 with $\ge$10 sentences from 53\% to 80\%; readings it did not touch stayed at 50\%. S6a and S5
-followed (91.0\%, 91.8\%). Speaker similarity did not change with 22--31\% synthetic data. For the
-CC BY line, the 309k sentences that had passed in Emilia (NC) voices were synthesized again with the
-same text and seed in Emilia-YODAS voices (2,998 voices, 553\,h).
+followed (91.0\%, 91.8\%). Speaker similarity did not change with 22--31\% synthetic data. The CC
+BY line used the synthetic sets from early in training: the 309k sentences that had passed in Emilia
+(NC) voices were synthesized again with the same text and seed in Emilia-YODAS voices (2,998 voices,
+553\,h).
 
 \subsection{Text, tokenizer and mixes}
 Text is normalized (NFKC, 。$\to$\texttt{.}, 、$\to$\texttt{,}, no brackets, a space after each
@@ -244,7 +245,8 @@ steps/s; the main teacher's 700k steps took 76 hours.
 \includegraphics[width=\columnwidth]{fig_training_en.pdf}
 \caption{Teachers during training (CFG 2.0). Top: reading accuracy rises when new synthetic data
 arrives, not with more steps. Bottom: sentences with extra speech after the text. In the CC BY line,
-data cleaning and decays did not remove it; supervising the frames after EOS did. Shaded: decays.}
+data cleaning and decays did not remove it; supervising the frames after EOS did. Dotted: synthetic
+sets entering the main line's mix (Table~\ref{tab:synth}; S3+: a larger share of S3). Shaded: decays.}
 \label{fig:training}
 \end{figure}
 
@@ -322,8 +324,8 @@ voices. YODAS3 clips are cut again at 24\,kHz from videos with audio up to 15\,k
 116\,h of synthetic speech, discriminators included; four 10k-step runs then train the high band on
 the top UTMOSv2 clips without band limits or clipping (7--14\,h) and are averaged. Two videos that listening revealed as synthetic
 voices were left out. The result matches the best NC decoder in reconstruction and slightly exceeds
-it in TTS (UTMOSv2 +0.35--0.42 over the original Mimi, speaker similarity 0.55$\to$0.65); in
-listening, the CC BY decoders could not be told apart from it.
+it in TTS (UTMOSv2 +0.35--0.42 over the original Mimi, speaker similarity 0.55$\to$0.65), and
+listening could not tell the CC BY decoders from the best NC one.
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3pt}

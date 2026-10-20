@@ -43,6 +43,9 @@ EXTRA_CC = [(10, 13.9), (20, 9.1), (50, 6.7), (100, 7.7), (150, 9.1), (200, 8.3)
             (400, 14.0), (500, 34.4), (505, 8.4), (510, 11.1), (520, 10.5), (530, 11.0), (535, 9.9), (540, 8.8),
             (545, 8.5), (550, 10.9)]
 EXTRA_CC_PEOS = [(550, 10.9), (555, 1.9), (560, 0.9), (580, 0.9), (590, 1.1), (600, 3.7), (620, 4.3)]
+# (k steps, set) where a synthetic set entered the main line's mix (S3+: a larger share of S3)
+SETS_MAIN = [(93, "S3"), (240, "S3+"), (274, "S4"), (375, "S7"), (400, "S6a"), (457, "S5"), (521, "S6b"),
+             (660, "S9")]
 DECAYS_MAIN = [(600, 660), (660, 700)]
 DECAYS_CC = [(400, 500), (560, 620)]
 
@@ -53,12 +56,9 @@ LABELS = {
         "acc": "JKYB-mini accuracy (%)",
         "extra": "extra speech (%)",
         "step": "training step (k)",
-        "synth": "synthetic\nspeech added",
-        "data": "new synthetic sets",
         "decay": "LR decay",
         "peos": "post-EOS\nsilence",
         "first_decay": "first decay",
-        "teacher": "teacher",
         "cc_peos": "CC BY line, post-EOS silence",
     },
     "ja": {
@@ -67,12 +67,9 @@ LABELS = {
         "acc": "JKYB-mini の正解率（%）",
         "extra": "余計な発話（%）",
         "step": "学習ステップ（k）",
-        "synth": "合成音声を\n追加",
-        "data": "合成データの追加",
         "decay": "LR の減衰",
         "peos": "EOS の後の\n無音",
         "first_decay": "最初の減衰",
-        "teacher": "教師",
         "cc_peos": "CC BY 版、EOS の後の無音",
     },
 }
@@ -96,13 +93,12 @@ def plot(lang: str, output: Path) -> None:
     ax1.plot(x, y, color=BLUE, lw=1.1, label=lab["main"])
     x, y = xy(CC)
     ax1.plot(x, y, color=ORANGE, lw=1.1, label=lab["cc"])
-    ax1.axvline(93, color=BLUE, ls=":", lw=0.8)
-    ax1.text(100, 64.5, lab["synth"], fontsize=5.8, color=BLUE, va="bottom", linespacing=0.95)
-    for s in (375, 400, 457, 521):
-        ax1.plot([s], [86.2], marker="v", ms=3, color=BLUE)
-    ax1.text(448, 84.4, lab["data"], fontsize=5.8, color=BLUE, ha="center", va="top")
-    ax1.annotate(lab["teacher"], (580, 92.7), xytext=(468, 95.2), fontsize=5.8, color=ORANGE,
-                 arrowprops={"arrowstyle": "-", "lw": 0.6, "color": ORANGE})
+    top = ax1.get_xaxis_transform()  # x in steps, y in axes units
+    for step, name in SETS_MAIN:
+        ax1.axvline(step, color=BLUE, ls=":", lw=0.7)
+        ha = {"S7": "right", "S6a": "left"}.get(name, "center")  # 25k apart: keep the labels apart
+        ax1.text(step + {"right": 2, "left": -2}.get(ha, 0), 1.015, name, transform=top, fontsize=5.5,
+                 color=BLUE, ha=ha, va="bottom")
     ax1.set_ylim(60, 97.5)
     ax1.set_ylabel(lab["acc"], fontsize=6.5)
     ax1.legend(fontsize=6, loc="lower right", frameon=False)
