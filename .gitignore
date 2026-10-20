@@ -224,3 +224,7 @@ data/
 exp/
 runs/
 wandb/
+
+# technical report: fonts are downloaded by docs/report/build.sh; TeX logs
+docs/report/fonts/
+docs/report/*.log
