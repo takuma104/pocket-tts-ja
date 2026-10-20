@@ -251,7 +251,19 @@ C2 の decoder と識別器から、C1 で決めたデータで HF の段を回�
   - jvs_bal: **+0.084 ± 0.014**（M2CH_soup2 は +0.063）、UTMOS22 +0.031。
   - short: −0.024 ± 0.020（M2CH_soup2 は −0.003）。
   - Kana-CER は jvs_bal 1.99% / short 4.06%、話者類似度は 0.603。
-- **次（`runs/lane_c4b.sh`、10/20 21:28 開始）**: M2C_base2 から m2 と m3 の `--seed 1` を足し、4 本の平均（M2CH2_soup4）を見る。
+- **2 回目（10/20 23:04、`runs/lane_c4b.sh`）**: M2C_base2 から m2 と、m3 の `--seed 1` を足し、4 本を平均した（M2CH2_soup4）。
+
+| 再構成 | UTMOSv2 Δkeep4k（女性） | soup12hp との差 | UTMOS22 Δkeep4k | Kana-CER | 類似度 | ViSQOL / NSIM 8–12k |
+|---|---:|---:|---:|---:|---:|---:|
+| M2CH2_m2 | +0.390（+0.495） | −0.007 ± 0.005 | −0.034 | | | |
+| M2CH2_m3s1 | +0.378（+0.486） | −0.019 ± 0.005 | −0.032 | | | |
+| M2CH2_soup2 | +0.375（+0.486） | −0.022 ± 0.005 | −0.035 | 4.68% | 0.805 | 3.996 / 0.762 |
+| **M2CH2_soup4** | **+0.383（+0.493）** | **−0.014 ± 0.005** | −0.029 | 4.69% | 0.805 | 3.994 / 0.762 |
+
+  - m3 の seed 違い（m3 と m3s1）は 0.004 で、NC 版と同じ小ささ。1 回目の系列との差（0.016）は、土台の作り直しによる。
+  - soup4 − soup2: +0.008 ± 0.001（UTMOS22 +0.005）。
+  - TTS（生徒 D1b 120k、soup12hp との同じ文の差）: jvs_bal **+0.095 ± 0.014**（UTMOS22 +0.039）、short **+0.001 ± 0.020**。Kana-CER は 1.96% / 4.00%、話者類似度は 0.604。
+  - **公開する CC 版の decoder は M2CH2_soup4**（`runs/M2H_soups/M2CH2_soup4.safetensors`）。再構成の UTMOSv2 は目安を満たし、UTMOS22 だけ届かない（−0.029）。TTS では UTMOSv2 も UTMOS22 も soup12hp と並ぶか上回る。
 - **次（C5、`runs/lane_c5.sh`）**: main の CC BY 版の生徒で TTS を確かめる。生徒は D1-CC 160k（6 層）と D0-CC 50k（24 層、EOS の後 3 フレーム）で、galleria からコピーした。decoder は元の Mimi（いまのリリースの構成）、M2CH2_soup2 / soup4、soup12hp（参考）。jvs_bal と short の UTMOSv2 / UTMOS22、Kana-CER、話者類似度を元の Mimi と比べる。
 
 比べる相手: p100E、soup12hp。指標: JVS 再構成の UTMOSv2 / UTMOS22（hp40）、Kana-CER、類似度、ViSQOL の 8–12kHz、TTS の出力（公開中の生徒 D1b 120k に加えて、CC 版の生徒 D1-CC があればそれでも）。試聴ページ（録音 / keep4k / soup12hp / CC 版）。
