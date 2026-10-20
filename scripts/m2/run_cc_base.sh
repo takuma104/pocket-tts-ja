@@ -9,7 +9,7 @@
 #      decoder's, as run_gan_keep.sh made keep4k
 # then the JVS reconstructions of both (as ${NAME}_gs and $NAME), MOS, Kana-CER and similarity, as run_hf.sh.
 # YODAS3 clips longer than --max-seconds are kept with their first 8 s (the trainer drops longer rows otherwise);
-# rows without a wav (failed extraction) are left out.
+# rows without a wav (failed extraction) and the videos of scripts/m2/yodas3_exclude.txt are left out.
 cd "$(dirname "$0")/../.." || exit 1
 NAME=$1; shift
 OLD=${OLD:-/home/takuma/co/pocket-tts-ja}
@@ -20,10 +20,11 @@ S3="irodori=$OLD/data/synth/s3_cc/manifest.jsonl:$OLD/data/synth/s3_cc/audio:0.5
 echo $$ > "runs/run_cc_base_$NAME.pid"
 python3 -c "
 import json, os, sys
+excluded = {line.split('#')[0].strip() for line in open('scripts/m2/yodas3_exclude.txt')} - {''}
 with open(sys.argv[2], 'w') as f:
     for line in open(sys.argv[1]):
         row = json.loads(line)
-        if os.path.exists(f'data/m2/yodas3/audio/{row[\"id\"]}.wav'):
+        if os.path.exists(f'data/m2/yodas3/audio/{row[\"id\"]}.wav') and row['video'] not in excluded:
             f.write(json.dumps({'id': row['id'], 'duration': min(row['duration'], 7.99)}) + '\n')
 " "$Y3" "runs/${NAME}_yodas3.jsonl" || exit 1
 Y="yodas3=runs/${NAME}_yodas3.jsonl:data/m2/yodas3/audio:0.5"

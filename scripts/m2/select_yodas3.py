@@ -10,7 +10,8 @@ and per gender the --per-gender best by --rank are kept:
     mos   UTMOSv2 after the 40 Hz high-pass (mos_eval.py's caches under --mos-root, every name in it)
     mosz  UTMOSv2 and UTMOS22 (same caches), each as a z-score within the gender, summed
 
---max-per-speaker caps the clips of one speaker (0: no cap), the best ones kept. Writes <out>/<name>_f.jsonl and <name>_m.jsonl (id, duration capped at --max-seconds: the trainer drops longer rows and
+--max-per-speaker caps the clips of one speaker (0: no cap), the best ones kept. The videos of --exclude (by default
+yodas3_exclude.txt next to this script: synthetic voices heard on the listening pages) are left out. Writes <out>/<name>_f.jsonl and <name>_m.jsonl (id, duration capped at --max-seconds: the trainer drops longer rows and
 reads a clip from its start) for train_mimi_decoder.py --data, and prints what the sets hold.
 
     uv run python scripts/m2/select_yodas3.py data/m2/yodas3 --name hf --rank hf --per-gender 10000
@@ -39,6 +40,8 @@ def main() -> None:
     parser.add_argument("--max-clipped", type=float, default=1e-4)
     parser.add_argument("--f0-split", type=float, default=165.0)
     parser.add_argument("--max-seconds", type=float, default=7.99)
+    parser.add_argument("--exclude", type=Path, default=Path(__file__).with_name("yodas3_exclude.txt"),
+                        help="video ids to leave out, one per line ('#' starts a comment)")
     args = parser.parse_args()
     manifest = {r["id"]: r for r in map(json.loads, open(args.dir / "manifest.jsonl"))}
     scores = {r["id"]: r for r in map(json.loads, open(args.dir / "scores.jsonl"))}
@@ -53,8 +56,12 @@ def main() -> None:
         return (s.get("voiced", 0) >= args.min_voiced and s["top"][0] >= args.min_top
                 and s["top"][1] - s["top"][0] >= -args.max_drop and s["clipped"] <= args.max_clipped)
 
+    excluded = {line.split("#")[0].strip() for line in open(args.exclude)} - {""} if args.exclude.exists() else set()
     pool = [s for s in scores.values() if keep(s) and (args.rank not in ("mos", "mosz") or s["id"] in mos)]
-    print(f"{len(scores)} scored, pool {len(pool)}" + (f" (with UTMOSv2: {len(mos)})" if mos else ""))
+    dropped = sum(manifest[s["id"]]["video"] in excluded for s in pool)
+    pool = [s for s in pool if manifest[s["id"]]["video"] not in excluded]
+    print(f"{len(scores)} scored, pool {len(pool)}" + (f" (with UTMOSv2: {len(mos)})" if mos else "")
+          + f", {dropped} clips of {len(excluded)} excluded videos left out")
     out = args.out or args.dir / "sets"
     out.mkdir(parents=True, exist_ok=True)
     for gender, female in (("f", True), ("m", False)):

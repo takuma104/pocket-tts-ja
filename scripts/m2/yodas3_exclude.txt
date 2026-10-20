@@ -1,0 +1,5 @@
+# YODAS3 videos left out of the CC decoder's training lists (select_yodas3.py, run_cc_base.sh): one video id per line,
+# then what was found. Synthetic voices may carry the speech engine's terms (credits and the like) besides the
+# video's CC BY, so they are dropped from the lists of runs to come.
+d569e8b374e1ea03b73e8e34da21fab8  # synthetic voice, heard on the mz5 listening page (10/20)
+4c5e71505f5db5517bb0cda3d0ecf063  # synthetic voice, heard on the mz5 listening page (10/20)
