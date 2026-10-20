@@ -42,9 +42,9 @@ audio = model.generate_audio(voice, "こんにちは。今日はいい天気で�
 
 - For the CC BY release use `hf://takuma104/pocket-tts-ja-cc/japanese.yaml`; for the 24-layer
   models, `japanese_24l.yaml`.
-- `--voice` is a recording of the voice to clone (a few seconds of clean speech). The CC BY repo has
-  ten synthetic voices in `voices/` (for example
-  `hf://takuma104/pocket-tts-ja-cc/voices/female_03.wav`), made with Irodori-TTS from text
+- `--voice` is a recording of the voice to clone (a few seconds of clean speech). Both repos have
+  the same ten synthetic voices in `voices/` (for example
+  `hf://takuma104/pocket-tts-ja/voices/female_03.wav`), made with Irodori-TTS from text
   descriptions. Without `--voice` the CLI clones its default voice (alba, an English speaker),
   which reads Japanese as well (JSUT Kana-CER 1.80% / 2.00%, against 2.15% / 2.23% with the JVS
   prompts). The pre-made voices cannot be selected by name (`--voice alba`): they are embeddings
