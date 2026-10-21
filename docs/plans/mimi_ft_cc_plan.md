@@ -416,6 +416,15 @@ main の CC BY 版の生徒は、D1-CC 160k（6 層）と D0-CC 50k（24 層、E
 
 確認: JVS（run_hf.sh の通常の確認）、Space の参照音声と held-out の anime クリップの再構成（5k と 10k）で comb / レベル / 類似度 / UTMOS / NISQA。目安: female_02 / 05 の NISQA-TTS 自然さと coloration が keep4k / M2C_base2 の水準に戻り、JVS の UTMOSv2 が M2C_base2（+0.167）より上、無声子音の 4kHz 以上のレベルが soup4 並み（録音 −2dB 以内）。
 
+**結果 1（M2CV_m3 / M2CV_m3L、10/22 04:50）**: female_02 / 05 の自然さは keep4k の水準に戻るが、有声の高域は「元の Mimi の量」には留まらず、JVS の Kana-CER と類似度が退行する。
+
+- 学習中の検証で、有声の 4–6kHz のレベルは両 run とも上がり続けた（JVS −6.0 → −2.2dB、anime −6.2 → −3.4dB。識別器を 4kHz 以下にしても同じ）。持ち上げているのは共有スペクトル loss（300–12kHz）で、識別器ではない。→ 3 本目 `M2CV_m3LS`（`--spec-band 300 4000 --gan-lowpass 4000`）を追加（05:00 開始）。
+- JVS 再構成（女性の有声、録音比）: 4–6k レベル M2CV_m3 −3.1dB（keep4k −6.8、M2CH2_m3 −1.4）、8–10k −2.1dB（−7.9 / −1.7）。無声子音の 4–6k は +1.3dB（録音を超える。M2CH2_m3 −0.9）。線スペクトル 0 本。
+- JVS: UTMOSv2 Δkeep4k M2CV_m3 +0.260（5k +0.271）、M2CV_m3L +0.214（M2C_base2 +0.167、M2CH2_m3 +0.382）。UTMOS22 −0.018 / −0.010（5k は ±0.005）。**Kana-CER 5.00% / 5.05%（keep4k 4.70%、M2C_base2 4.74%、5k で 4.89%）、類似度 0.748 / 0.744（keep4k 0.779、M2C_base2 0.766、soup4 0.805）**。
+- Space の参照音声（NISQA-TTS 自然さ、keep4k / M2C_base2 / soup4 / M2CV_m3 / M2CV_m3L）: female_02 4.20 / 4.17 / 3.55 / **4.26** / 4.15、female_05 4.17 / 4.09 / 3.68 / **4.21** / 4.10。coloration は female_05 で 3.67 / 3.84 / 3.71 / 3.37 / 3.49（5k は 3.66 / 3.78）。female_03 の NISQA v2 MOS は keep4k 3.76 に対して 3.14 / 3.36（soup4 2.90）。
+- held-out の anime クリップ: 自然さは keep4k 並み（family 5 で 3.27 / 3.25、keep4k 3.37）、coloration は少し上（2.79 / 2.84、keep4k 2.77）、**類似度 0.809 / 0.811（keep4k 0.840、soup4 0.836）**。4–6k の comb は 1.5〜1.6 で keep4k と同じ（倍音は無い）。
+- 見立て: 目標 2 つのうち「female_02 / 05 の自然さ」は満たし、「JVS の UTMOSv2 が M2C_base2 より上」も満たす（+0.26 対 +0.17）が、Kana-CER と類似度の退行（JVS と anime の両方）があるので、このままでは M2C_base2 より良いとは言えない。退行の原因は未特定（無声子音の高域の出し過ぎ +1.3dB か、フレームごとに目標が録音と元の Mimi で切り替わること）。3 本目の結果を待って判断する。
+
 ## 4. 判断の目安
 
 - C1: YODAS3 の組み合わせで p100E との差が −0.02 以内なら、データの選別で足りている。
