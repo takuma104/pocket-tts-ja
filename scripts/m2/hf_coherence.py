@@ -81,6 +81,8 @@ def main() -> None:
                 env[name, it["gender"]].append(e_row)
     head = " | ".join(f"{lo / 1000:g}-{hi / 1000:g}k" for lo, hi in BANDS)
     for group in ("F", "M"):
+        if not wave[args.names[0], group]:
+            continue
         print(f"\n{group}: {len(wave[args.names[0], group])} voiced frames. correlation one period later: waveform / envelope"
               f"\n| result | {head} |\n|---|" + "---|" * len(BANDS))
         for name in args.names:

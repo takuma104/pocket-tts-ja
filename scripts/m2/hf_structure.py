@@ -147,6 +147,8 @@ def main() -> None:
     head = " | ".join(f"{lo / 1000:g}-{hi / 1000:g}k" for lo, hi in BANDS)
     for group in ("F", "M", "all"):
         n = len(comb[args.names[0], group])
+        if n == 0:
+            continue
         print(f"\n{group}: {n} voiced frames. comb dB / level dB re {args.names[0]}\n| decoder | {head} |")
         print("|---|" + "---|" * len(BANDS))
         ref_power = np.mean(power[args.names[0], group], axis=0)
@@ -158,6 +160,8 @@ def main() -> None:
         above = [i for i, (lo, _) in enumerate(BANDS) if lo >= 2500]
         own_head = " | ".join(f"{BANDS[i][0] / 1000:g}-{BANDS[i][1] / 1000:g}k" for i in above)
         for group in ("F", "M"):
+            if not own[args.names[0], group]:
+                continue
             print(f"\n{group}: comb dB at the result's own F0 (refined on 1-2.5k) | autocorrelation F0 against the"
                   f" recording's: median and 90th percentile of |cents|, share > 1%, frames voiced in both"
                   f"\n| decoder | {own_head} | median | p90 | > 1% | voiced |\n|---|" + "---|" * (len(above) + 4))
@@ -168,6 +172,8 @@ def main() -> None:
                       + f" | {np.median(off):.1f} | {np.percentile(off, 90):.1f} | {np.mean(off > 1200 * np.log2(1.01)):.1%}"
                       + f" | {len(off) / len(own[name, group]):.1%} |")
     for group in ("F", "M"):
+        if not noise[args.names[0], group]:
+            continue
         print(f"\n{group}: {len(noise[args.names[0], group])} frames of unvoiced consonants. level dB re {args.names[0]}"
               f"\n| decoder | {head} |\n|---|" + "---|" * len(BANDS))
         ref_power = np.mean(noise[args.names[0], group], axis=0)
