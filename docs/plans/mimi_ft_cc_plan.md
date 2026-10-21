@@ -365,6 +365,7 @@ main の CC BY 版の生徒は、D1-CC 160k（6 層）と D0-CC 50k（24 層、E
 **Irodori の合成で高い声を学習データに足す案（ユーザー、10/22）への見立て**:
 
 - 賛成だが、**先に 1 時間の試験で「decoder が潜在表現からこの声の高域を学べるか」を確かめてから**データを作るのがよい。理由: HF 計画の Phase 1（H1 / H2）と過学習プローブ（§2.4）で、loss とデータを変えても未学習のクリップには 4kHz 以上の倍音が出なかった（学習したクリップには出た = 記憶）。F0 350〜450Hz では倍音の間隔が 2 倍広いので同じ結論とは限らないが、未検証。元の Mimi で既に崩れているぶんは encoder（固定）の潜在表現の限界の可能性もあり、decoder のデータでは半分しか直らないかもしれない。
+- `scripts/synth/irodori_synth.py` に caption を足した（10/22。行の `"caption"`、`ref_wav` null で voice design、`--cfg-scale-caption` 3.0。caption の有無で batch を分ける）。Space のプリセットの caption で試すと、female_05 の caption は F0 中央値 511 / 370 / 261Hz、female_02 のは 425 / 321 / 256Hz（文ごと。参照音声なしの voice design は文ごとに別の声になるので、同じ声で何文も作るなら 1 文目を `ref_wav` にして caption と併用する）。NISQA-TTS の自然さと NISQA v2 の coloration は、今後 UTMOSv2 と並べて使う（ユーザー、10/22）。
 - 試験の形: Irodori の voice design（caption のみ、参照音声なし）で female_02 / 05 と同系統の caption を 4〜5 種 × 20 文ほど合成（1 声と数文を held-out）。`scripts/m2/overfit_probe.py` の要領で M2CH2_soup4 から数千 step 学習し、held-out の声と Space の female_02 / 05 の再構成で comb 4–6k、1 周期相関、ジッタ、NISQA-TTS を見る。倍音か自然さが held-out で上がれば本番（数千クリップを HF の段のリストに足して m3 / m4 を回し直し、soup）、上がらなければ案 1（有声の高域の雑音を抑える）か、プリセットの変更。
 - 使ってよい根拠: Irodori-TTS v4.1 は MIT、voice design は参照音声を使わない（Space のプリセットと同じ作り方）。Space の female_05 の 4–6kHz の comb は 10.4dB、6–8kHz 6.3dB で、自然音声（JVS 女性 5.1 / 3.1）より倍音がはっきりしている。HF 計画 §2.3 で Irodori が実音声より 4–6kHz が 4dB 暗かったのは男性（jvs001 参照）の話で、高い声では当てはまらない。
 - 懸念: 合成音声の高域（Irodori の vocoder の癖）を decoder が覚える。プリセットの声にとっては望むものだが、自然音声の高い声（YODAS の 300Hz 超 435 クリップ）と混ぜて偏りを薄めるのがよい。

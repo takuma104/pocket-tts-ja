@@ -6,7 +6,11 @@ Input is a jsonl with one row per utterance; each row needs at least::
     {"id": str, "text": str, "ref_wav": str | null, "seed": int}
 
 and may give ``"seconds"``: the clip length to generate, instead of the duration predictor's
-(for very short text, which the predictor stretches to 2-3 s).
+(for very short text, which the predictor stretches to 2-3 s), and ``"caption"``: a voice /
+style description (Irodori's ``--caption``). A caption with ``ref_wav`` null is voice design
+(the voice comes from the caption alone, as the Space's presets were made); with a reference
+it steers the style. The caption gets its own CFG branch (``--cfg-scale-caption``, 3.0 like
+Irodori), applied over the same t range as the others.
 
 ``ref_wav`` is a speaker reference (any format/rate torchaudio or soundfile can
 read; relative paths are resolved against ``--ref-root``). ``null`` synthesizes
@@ -30,9 +34,10 @@ The sampler is adapted from Irodori-TTS-Experiments ``scripts/batch_synth.py``
 40 steps, independent CFG (text 3.0 / speaker 5.0, applied for t in [0.5, 1.0]),
 DiT in bf16 with the text encoder and the DACVAE codec in fp32, SDPA
 "efficient" backend, tail trimming and the silentcipher watermark. The only
-extension is per-item references: rows are sorted by predicted length and
-batched across different references (padded and masked, as in training); rows
-with and without a reference are never mixed in one batch.
+extension is per-item references and captions: rows are sorted by predicted length and
+batched across different references and captions (padded and masked, as in training);
+rows with and without a reference, or with and without a caption, are never mixed in one
+batch (the CFG branches of a batch are the same for every row).
 
 Run inside the Irodori-TTS environment, e.g. on galleria2::
 
@@ -140,6 +145,7 @@ class SynthItem:
     seed: int
     ref_wav: str | None
     seconds: float | None = None  # clip length to use instead of the duration predictor's
+    caption: str | None = None  # voice / style description; None = no caption branch
 
 
 @dataclass(frozen=True)
@@ -156,6 +162,7 @@ class SamplingSettings:
     num_steps: int = 40
     cfg_scale_text: float = 3.0
     cfg_scale_speaker: float = 5.0
+    cfg_scale_caption: float = 3.0
     cfg_min_t: float = 0.5
     cfg_max_t: float = 1.0
     duration_scale: float = 1.0
@@ -237,7 +244,10 @@ class MultiRefSynthesizer:
     # ---- conditions
 
     def _encode(
-        self, texts: Sequence[str], refs: Sequence[str | None]
+        self,
+        texts: Sequence[str],
+        refs: Sequence[str | None],
+        captions: Sequence[str | None],
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -247,7 +257,9 @@ class MultiRefSynthesizer:
         torch.Tensor | None,
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor | None,
     ]:
+        """Encoded conditions of a batch; the last element is has_caption (B,) or None."""
         batch = len(texts)
         text_ids, text_mask = self.runtime.tokenizer.batch_encode(
             list(texts), max_length=self.text_max_len
@@ -256,13 +268,21 @@ class MultiRefSynthesizer:
         text_mask = text_mask.to(self.device)
         caption_ids = None
         caption_mask = None
+        has_caption = None
+        caption_texts = ["" if c is None else str(c).strip() for c in captions]
         if self.runtime.model_cfg.use_caption_condition:
+            # Irodori encodes the caption with the text encoder; a row without a caption keeps
+            # the tokens of "" with an all-zero mask (InferenceRuntime.synthesize does the same).
             caption_ids, caption_mask = self.runtime.caption_tokenizer.batch_encode(
-                [""] * batch, max_length=self.caption_max_len
+                caption_texts, max_length=self.caption_max_len
             )
-            caption_mask.zero_()
+            has_caption = torch.tensor(
+                [c != "" for c in caption_texts], dtype=torch.bool, device=self.device
+            )
+            caption_mask = caption_mask.to(self.device) & has_caption[:, None]
             caption_ids = caption_ids.to(self.device)
-            caption_mask = caption_mask.to(self.device)
+        elif any(c != "" for c in caption_texts):
+            raise ValueError("This checkpoint has no caption conditioning; drop the captions.")
         ref_latent, ref_mask = self._ref_batch(refs)
         has_speaker = ref_mask.any(dim=1)
         (
@@ -298,6 +318,7 @@ class MultiRefSynthesizer:
             caption_mask,
             duration_features,
             has_speaker,
+            has_caption,
         )
 
     # ---- duration
@@ -325,11 +346,11 @@ class MultiRefSynthesizer:
             caption_mask,
             duration_features,
             has_speaker,
-        ) = self._encode(normalized, [item.ref_wav for item in items])
+            has_caption,
+        ) = self._encode(
+            normalized, [item.ref_wav for item in items], [item.caption for item in items]
+        )
         batch = len(normalized)
-        has_caption = None
-        if self.runtime.model_cfg.use_caption_condition:
-            has_caption = torch.zeros((batch,), dtype=torch.bool, device=self.device)
         pred_log_frames = self.model.predict_duration_log_frames(
             text_state=text_state,
             text_mask=text_mask,
@@ -362,13 +383,17 @@ class MultiRefSynthesizer:
         *,
         pad_multiple: int = 1,
     ) -> list[torch.Tensor]:
-        """Sample latents (frames, latent_dim); all items must agree on having a reference."""
+        """Sample latents (frames, latent_dim); all items must agree on having a reference and a caption."""
         cfg = self.runtime.model_cfg
         normalized = [normalize_text(item.text).strip() for item in items]
         refs = [item.ref_wav for item in items]
+        captions = [item.caption for item in items]
         no_ref = refs[0] is None
         if any((ref is None) != no_ref for ref in refs):
             raise ValueError("Rows with and without a reference cannot share a batch.")
+        with_caption = captions[0] is not None
+        if any((caption is not None) != with_caption for caption in captions):
+            raise ValueError("Rows with and without a caption cannot share a batch.")
         batch = len(normalized)
         patch = int(cfg.latent_patch_size)
         patched_steps = [math.ceil(steps / patch) for steps in latent_steps]
@@ -400,13 +425,19 @@ class MultiRefSynthesizer:
             caption_mask,
             _,
             _,
-        ) = self._encode(normalized, refs)
+            _,
+        ) = self._encode(normalized, refs, captions)
         branches: list[tuple[str, float]] = []
         if self.settings.cfg_scale_text > 0:
             branches.append(("text", float(self.settings.cfg_scale_text)))
         cfg_scale_speaker = 0.0 if no_ref else float(self.settings.cfg_scale_speaker)
         if cfg_scale_speaker > 0:
             branches.append(("speaker", cfg_scale_speaker))
+        # Irodori's sample_euler_rf_cfg: the caption branch drops the caption state and mask
+        # (zeros), like the others, and exists only when the batch has a caption.
+        cfg_scale_caption = float(self.settings.cfg_scale_caption) if with_caption else 0.0
+        if cfg_scale_caption > 0:
+            branches.append(("caption", cfg_scale_caption))
         mult = 1 + len(branches)
 
         def _uncond(
@@ -627,6 +658,8 @@ def load_items(path: Path, ref_root: Path) -> list[SynthItem]:
                 ref_path = Path(str(ref)).expanduser()
                 ref = str(ref_path if ref_path.is_absolute() else ref_root / ref_path)
             seconds = row.get("seconds")
+            caption = row.get("caption")
+            caption = None if caption is None or not str(caption).strip() else str(caption).strip()
             items.append(
                 SynthItem(
                     key=key,
@@ -634,6 +667,7 @@ def load_items(path: Path, ref_root: Path) -> list[SynthItem]:
                     seed=int(row["seed"]),
                     ref_wav=ref,
                     seconds=None if seconds is None else float(seconds),
+                    caption=caption,
                 )
             )
     return items
@@ -647,7 +681,7 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--input", type=Path, required=True, help="jsonl: id, text, ref_wav, seed"
+        "--input", type=Path, required=True, help="jsonl: id, text, ref_wav, seed [, caption, seconds]"
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
@@ -676,6 +710,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=40)
     parser.add_argument("--cfg-scale-text", type=float, default=3.0)
     parser.add_argument("--cfg-scale-speaker", type=float, default=5.0)
+    parser.add_argument(
+        "--cfg-scale-caption", type=float, default=3.0, help="CFG of the caption branch (rows with a caption)"
+    )
     parser.add_argument("--cfg-min-t", type=float, default=0.5)
     parser.add_argument("--cfg-max-t", type=float, default=1.0)
     parser.add_argument("--max-seconds", type=float, default=30.0)
@@ -719,6 +756,7 @@ def main() -> int:
         num_steps=args.num_steps,
         cfg_scale_text=args.cfg_scale_text,
         cfg_scale_speaker=args.cfg_scale_speaker,
+        cfg_scale_caption=args.cfg_scale_caption,
         cfg_min_t=args.cfg_min_t,
         cfg_max_t=args.cfg_max_t,
         max_seconds=args.max_seconds,
@@ -755,6 +793,7 @@ def main() -> int:
             {
                 "id": item.key,
                 "ref_wav": item.ref_wav,
+                "caption": item.caption,
                 "seed": item.seed,
                 "stage": stage,
                 "error": error,
@@ -800,6 +839,7 @@ def main() -> int:
             {
                 "id": item.key,
                 "ref_wav": item.ref_wav,
+                "caption": item.caption,
                 "seed": item.seed,
                 "seconds": round(seconds, 3),
                 "pred_frames": output.pred_frames,
@@ -854,7 +894,7 @@ def main() -> int:
                 stats["failed"] += 1
                 continue
             valid.append(item)
-        # Duration prediction, then length-sorted batches per reference mode.
+        # Duration prediction, then length-sorted batches per reference / caption mode.
         steps: list[int] = []
         for i in range(0, len(valid), args.duration_batch_size):
             sub = valid[i : i + args.duration_batch_size]
@@ -868,11 +908,18 @@ def main() -> int:
                         fail(item, "duration", f"{type(exc).__name__}: {exc}")
                         stats["failed"] += 1
                         steps.append(-1)
-        for no_ref in (False, True):
+        for no_ref, with_caption in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
             idx = [
                 i
                 for i, item in enumerate(valid)
-                if (item.ref_wav is None) == no_ref and steps[i] > 0
+                if (item.ref_wav is None) == no_ref
+                and (item.caption is not None) == with_caption
+                and steps[i] > 0
             ]
             order = sorted(idx, key=lambda i: steps[i])
             for batch_idx in length_batches(
