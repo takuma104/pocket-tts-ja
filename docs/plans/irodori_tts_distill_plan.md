@@ -143,7 +143,7 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - caption なし
   - 短文は S9 と同じく `seconds` を明示する(0.13 s/mora)
 - **入力にする組(推奨: 最初から CC BY のみ)**
-  - main の CC ラインで QC を通った (text, ref_id, seed) を使う。`data/synth/*_cc/manifest.jsonl` にあり、309k 文 / 553 h。
+  - main の CC ラインで QC を通った (text, ref_id, seed) を使う。`data/synth/*_cc/manifest.jsonl` にあり、326,640 文 / 553 h(3,000 声)。
   - 同じ seed で生成し直すので、出力は以前の音声とほぼ同じになるはず。ただし batch 構成による bf16 の数値差はありうる。
   - 元の入力文と seed をどう復元するかは、P1 の最初に確認する。
 - **参照 wav**
@@ -311,4 +311,103 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 
 ## 9. 進捗ログ
 
-(ここに追記していく)
+### 10/22 P0a: 環境とツール(27b5cc0, dbf6444)
+
+- **環境**
+  - 本体: torch 2.14.1、`dacvae` は 414c207 に固定、protobuf は override。
+  - 教師: `third-party/Irodori-TTS/.venv`(`uv sync --extra cu128`、torch 2.10)。
+  - ASR: JKYB の Python 3.13 環境。
+  - NISQA: `third-party/NISQA`。重みは CC BY-NC-SA なので評価専用。
+- **DACVAE の符号化**(`src/pocket_tts_ja/dacvae.py`)
+  - Irodori と同じく torchaudio で resample する。soxr だと latent が平均 0.056 ずれた。
+  - irodori_tts.codec との差は encode が最大 0.0075、decode が 1e-4。
+- **評価セット**(`eval_sets.py`): voices / jsut / short / jvs_bal / jkyb_mini。jvs_bal は ROTATION の 4 話者を除いた男女各 5 名。
+- **NISQA**(`nisqa_eval.py`): mimi_ft と同じ数値が出ることを確認した(female_02: 4.62 / 4.33 / 4.20 / 3.55)。
+
+### 10/22 P0b: codec の比較 → DACVAE で進めてよい(試聴待ち)
+
+- **素材**(`exp/irodori_distill/p0/recon_*`)
+  - Space: リリース 10 声の prompt(Irodori 生成)。
+  - Anime: Irodori voice design の高い声、150 clips。
+  - y3hi: YODAS3 の自然音声。F0 ≥ 300 Hz の女声 300 clips(1 動画 4 clips まで)。
+  - JVS: 男女各 5 名 × 100 clips。
+- **経路**
+  - 24 kHz で比べた(DACVAE は 48 kHz decode を soxr で 24 kHz に落とした)。
+  - Mimi 系: 元 Mimi、keep4k(NC)、soup4(現行 CC リリース)、base2(M2C_base2)。
+- **4–6 kHz comb と類似度**(女声。JVS は男女別、y3hi / Anime は女声のみ)
+
+| | 録音 | DACVAE | 元 Mimi | keep4k | soup4 | base2 |
+|---|---:|---:|---:|---:|---:|---:|
+| comb 4–6k dB: JVS F | 4.8 | 5.1 | 1.2 | 1.4 | 1.5 | 1.5 |
+| 〃 JVS M | 3.2 | 2.3 | 0.3 | 0.4 | 0.4 | 0.4 |
+| 〃 y3hi | 5.9 | 6.1 | 2.0 | 2.2 | 2.0 | 2.2 |
+| 〃 Anime | 6.9 | 7.1 | 1.7 | 1.8 | 1.3 | 1.8 |
+| level 4–6k dB vs 録音: JVS F | 0 | −1.2 | −6.8 | −6.7 | −1.3 | −6.5 |
+| F0 誤差の中央値(cents): JVS F | 0 | 1.3 | 3.8 | 3.5 | 3.5 | 3.6 |
+| 〃 y3hi | 0 | 1.7 | 4.3 | 4.3 | 4.3 | 4.3 |
+| 〃 Anime | 0 | 1.0 | 4.7 | 4.5 | 4.8 | 4.6 |
+| 1 周期相関 4–6k(波形): JVS F | 0.15 | 0.16 | 0.03 | 0.04 | 0.05 | 0.05 |
+| 〃 y3hi | 0.19 | 0.19 | 0.05 | 0.07 | 0.06 | 0.07 |
+| 〃 Anime | 0.21 | 0.22 | 0.06 | 0.07 | 0.05 | 0.07 |
+| ECAPA 類似度 vs 録音: JVS | – | 0.891 | 0.698 | 0.779 | 0.805 | 0.766 |
+| 〃 y3hi | – | 0.887 | 0.699 | 0.767 | 0.802 | 0.763 |
+| 〃 Anime | – | 0.975 | 0.767 | 0.840 | 0.836 | 0.835 |
+| 〃 Space | – | 0.983 | 0.833 | 0.885 | 0.881 | 0.879 |
+
+- **自然さ・内容**
+
+| | 録音 | DACVAE | 元 Mimi | keep4k | soup4 | base2 |
+|---|---:|---:|---:|---:|---:|---:|
+| NISQA-TTS: JVS | 4.616 | 4.542 | 4.351 | 4.287 | 4.380 | 4.213 |
+| 〃 y3hi | 4.136 | 4.313 | 4.183 | 4.020 | 4.131 | 3.952 |
+| 〃 Anime | 4.038 | 4.005 | 3.667 | 3.426 | 3.327 | 3.402 |
+| 〃 Space(10 clips) | 3.716 | 3.652 | 3.791 | 3.634 | 3.557 | 3.584 |
+| NISQA v2 col: JVS | 4.397 | 4.404 | 4.264 | 4.217 | 4.281 | 4.126 |
+| 〃 y3hi | 4.024 | 4.039 | 4.077 | 3.908 | 3.963 | 3.801 |
+| 〃 Anime | 3.390 | 3.240 | 2.854 | 2.944 | 2.867 | 2.887 |
+| UTMOSv2 hp40: JVS | 3.413 | 3.400 | 2.973 | 3.007 | 3.394 | 3.179 |
+| 〃 y3hi | 2.941 | 2.898 | 2.551 | 2.583 | 2.909 | 2.677 |
+| 〃 Anime | 2.621 | 2.542 | 2.050 | 2.103 | 2.362 | 2.125 |
+| Kana-CER: JVS(読み基準) | 3.20% | 3.52% | 5.32% | 4.56% | 4.56% | 4.59% |
+| 〃 Anime(読み基準) | 7.93% | 8.05% | 9.48% | 9.07% | 8.92% | 9.15% |
+| 〃 y3hi(録音の書き起こし基準) | – | 2.05% | 5.16% | 4.17% | 3.91% | 4.19% |
+
+(全数値は各 `exp/irodori_distill/p0/recon_*/report_*.txt`)
+
+- **読み**
+  - **DACVAE は 4 セットとも、どの指標でも録音にほぼ並ぶ。** 女声の 4–6 kHz comb は録音並み(JVS F 5.1 vs 4.8、y3hi 6.1 vs 5.9)。F0 の揺れは Mimi 系の 1/3 以下。類似度は Mimi 系より 0.09–0.21 高い。
+  - Mimi 系の decoder はどれも高域の倍音を作れない(comb 1–2 dB、1 周期相関 ≈0)。soup4 は高域の level だけを戻している(JVS 4–6k level −1.3 dB、keep4k / base2 は −6.5 dB)。M2 の天井はここ。
+  - UTMOSv2 は soup4 の高域ノイズを本物の倍音と区別できない(JVS 3.394 vs DACVAE 3.400、y3hi 2.909 vs 2.898)。NISQA-TTS は分けられる(Anime 3.33 vs 4.01、Space female_02 3.55 vs 4.55)。§8-7 のとおり NISQA を主に見る。
+  - DACVAE の弱点は男声の 4–6 kHz comb(2.3 vs 録音 3.2)と、8–10 kHz の level(−3.3 dB)。どちらも Mimi 系より良い。
+  - Space(10 clips)だけは NISQA-TTS で元 Mimi が録音より上に出る。clip が少なく、prompt 自体が Irodori 生成なので、重くは見ない。
+  - 48 kHz の DACVAE 出力(dacvae48)は、24 kHz の素材に対して NISQA mos / col がやや下がる(JVS col 4.327 vs 24 kHz 4.404)。DACVAE が 12 kHz より上に何かを足している。24 kHz の wheel では問題にならない。
+- **試聴ページ**: `exp/listening/p0_codec/index.html`(ローカル専用、JVS を含む)。4 セクション × 7 列。各声から有声の多い clip を 2 つ選んだ。
+- **判定**: 数値の上では、§P0b の基準をすべて満たした。最終判断はユーザーの試聴で行う。
+
+### 10/22 P0c: 教師(Yomi v3)の基準値
+
+- watermark なし、評価セットごとに `exp/irodori_distill/eval/<set>/`。teacher latent も `teacher_latents/` に保存した(P1-side の val に使う)。
+
+| set | Kana-CER | 類似度 | NISQA-TTS | UTMOSv2 hp40 |
+|---|---:|---:|---:|---:|
+| voices | 1.18% | 0.779 | 3.609 | 3.097 |
+| jvs_bal | 2.05%(録音 1.69%) | 0.712 | 4.375 | 3.550 |
+| short | 3.71% | 0.507 | – | – |
+| jsut | 1.77% | 0.708 | 4.422 | 3.520 |
+
+- 現行リリース(D1-CC + soup4)は JSUT 2.14%、JVS 2.18% / 0.651。教師はこれより Kana-CER で少し、類似度で 0.06 良い。生徒が蒸留で狙えるのは、主にこの差と音質(高域)になる。
+- 速度は 41.8 audio-s/s(jsut)。553 h なら 13–14 h。
+
+### 10/22 P1: 教師 latent の生成を開始
+
+- **入力**(`scripts/teacher/make_rows.py`)
+  - main の CC ラインの manifest から (text, ref, seed) を復元した。7 セットで 326,640 文 / 553.4 h / 3,000 声。
+  - 内訳: s3 148,815 / 275 h、s4 16,118 / 15 h、s5 34,956 / 65.2 h、s6a 26,755 / 52.1 h、s6b 64,418 / 124.7 h、s7 10,851 / 12.3 h、s9 24,727 / 9.1 h。
+  - 参照 wav は galleria2 から読み取りだけで持ってきた(refs_cc 2,311 + refs_yodas 689)。
+  - prompt latent(−16 dB に正規化してから符号化)は `data/irodori_distill/teacher/refs/` に置いた。
+- **QC を計画から変えた**: 「target 完全一致」ではなく、以前の合格音声との書き起こしの一致で判定する(`scripts/teacher/qc.py`、Kana-CER ≤0.02)。同じ seed・text・参照で生成し直すので、以前の書き起こしが手本になる。
+- **speech_end**
+  - Irodori の flattening point は、末尾の短い無音(−100 dB)を見逃す。
+  - そこで、16 kHz の QC 音声のフレーム RMS(ピークから 45 dB 以内)で決める(`scripts/teacher/pack.py`)。
+  - latent は切らずに丸ごと保存する。
+- **生成**: `runs/irodori_distill/p1_generate.sh s3`(detached)。latent は fp16 で、QC 用に 16 kHz の音声も書く。QC と pack が済んだら、音声は消す。
