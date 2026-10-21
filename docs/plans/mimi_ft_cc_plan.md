@@ -403,6 +403,19 @@ main の CC BY 版の生徒は、D1-CC 160k（6 層）と D0-CC 50k（24 層、E
 2. ピッチの揺れ（ケロケロ）は decoder のデータでは直らない。励振（B 系列）は試聴で不採用だったので、プリセットを低めの声に作り直すのが現実的。
 3. 両方をやらずに、CC 版の Space では female_02 / 05 のプリセットだけ差し替える。
 
+### C6 案 1: 有声フレームの 4kHz 以上を元の Mimi の量に保つ HF の段（10/22）
+
+ユーザーの決定（10/22）: 案 1 を進める。「CC 版の keep4k 相当は無いので、今の状態（soup4）よりは keep4k 相当に差し替えたい」。
+
+**差し替え先の確認**: CC の土台 `M2C_base2`（元の Mimi から CC データで 70k step、4kHz 以上を元の Mimi に保った段 = keep4k の CC 版。JVS 再構成で keep4k +0.167、Kana-CER 4.74%、類似度 0.766）は、Space の参照音声の再構成で keep4k と同じ振る舞いをする: NISQA-TTS 自然さ female_02 4.17（keep4k 4.20、soup4 3.55）、female_05 4.09（4.17 / 3.68）、coloration 3.88 / 3.84（keep4k 3.91 / 3.67）、NISQA v2 MOS 3.51 / 3.71（3.40 / 3.54）、類似度 0.736 / 0.888（0.763 / 0.884）。**案 1 が届かない場合は M2C_base2 を CC 版の decoder にできる**（license は CC、JVS の UTMOSv2 は keep4k より上）。
+
+**run**（`runs/lane_c6v.sh`、10/22 03:00 開始）: C4 のレシピ（M2C_base2 から m3 のリストで 10k step）の高域の loss を `--high-mode voicing`（`codec_ft.VoicingBlendMelLoss`: 4kHz 以上の目標を、無声フレームでは録音、有声フレームでは元の Mimi の出力にする。B 系列で `--noise-target voicing` として使ったものを、励振なしで高域の主 loss にする。単独では初めて）に替えた 2 本。
+
+- `M2CV_m3`: 識別器は C4 と同じ全帯域（有声の高域を持ち上げる力が残る）。
+- `M2CV_m3L`: 識別器は 4kHz 以下だけ（`--gan-lowpass 4000`。高域は blend の loss だけで決まる）。
+
+確認: JVS（run_hf.sh の通常の確認）、Space の参照音声と held-out の anime クリップの再構成（5k と 10k）で comb / レベル / 類似度 / UTMOS / NISQA。目安: female_02 / 05 の NISQA-TTS 自然さと coloration が keep4k / M2C_base2 の水準に戻り、JVS の UTMOSv2 が M2C_base2（+0.167）より上、無声子音の 4kHz 以上のレベルが soup4 並み（録音 −2dB 以内）。
+
 ## 4. 判断の目安
 
 - C1: YODAS3 の組み合わせで p100E との差が −0.02 以内なら、データの選別で足りている。
