@@ -4,3 +4,9 @@
 [submodule "third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition"]
 	path = third-party/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition
 	url = https://github.com/Parakeet-Inc/Joyo-Kanji-Yomi-Benchmark-Parakeet-Edition.git
+[submodule "third-party/Irodori-TTS"]
+	path = third-party/Irodori-TTS
+	url = https://github.com/Aratako/Irodori-TTS
+[submodule "third-party/NISQA"]
+	path = third-party/NISQA
+	url = https://github.com/gabrielmittag/NISQA

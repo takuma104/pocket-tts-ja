@@ -1,9 +1,54 @@
 [project]
 name = "pocket-tts-ja"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.13"
+description = "Distilling Irodori-TTS DACVAE latents into a Pocket TTS FlowLM (Japanese)"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "huggingface-hub>=2.1.1",
+    "av>=19.0.1",
+    "dacvae",
+    "huggingface-hub>=0.34",
+    "jiwer>=4.0.0",
+    "librosa>=0.11",
+    "matplotlib>=3.9",
+    "onnx>=1.23.2",
+    "onnx2torch>=1.5.15",
+    "onnxruntime>=1.30.0",
+    "pandas>=2.2",
+    "pocket-tts",
+    "pyarrow>=25.0.1",
+    "pyloudnorm>=0.2.0",
+    "pyopenjtalk-plus>=0.4.1.post9",
+    "pyworld>=0.3.5",
+    "pyyaml>=6.0.3",
+    "safetensors>=0.4",
+    "sentencepiece>=0.2.2",
+    "setuptools<81",
+    "soundfile>=0.14.0",
+    "soxr>=1.1.0",
+    "speechbrain>=1.1.1",
+    "sphn>=0.2.1",
+    "torchaudio>=2.11.0",
+    "tqdm>=4.70.1",
+    "transformers>=5.19.0",
+    "utmosv2",
+    "wandb>=0.30.0",
 ]
+
+[tool.uv]
+# descript-audiotools (a dacvae dependency) pins protobuf<3.20 for an old tensorboard;
+# nothing here uses that path, and onnx / wandb need a current protobuf.
+override-dependencies = ["protobuf>=4.25"]
+
+[tool.uv.workspace]
+members = [
+    "third-party/pocket-tts",
+]
+
+[tool.uv.sources]
+pocket-tts = { workspace = true, editable = true }
+utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2.git" }
+dacvae = { git = "https://github.com/facebookresearch/dacvae", rev = "414c20785fc3a28373073ea8ef7a1316eeeaca6e" }
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
