@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+data/
+exp/
+docs/report/fonts
+runs/
+wandb/
