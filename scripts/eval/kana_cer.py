@@ -1,6 +1,7 @@
 """Kana-CER of result directories (kana-whisper transcripts from asr_transcribe.py), by gender.
 
-The reference is the reading of the item's text (pyopenjtalk, canonicalized as JKYB), or, for
+The reference is the item's verified reading (``yomi``: JSUT kana, JVS labels) or else the reading
+of its text (pyopenjtalk), canonicalized as JKYB; or, for
 items without a text (YODAS3 clips), the transcript of the recording itself (``--ref-dir orig``),
 which measures how much the round trip changes what the ASR hears.
 
@@ -35,8 +36,9 @@ def main() -> None:
         refs = {it["key"]: asr_ref[it["key"]] for it in items if asr_ref.get(it["key"])}
         label = f"transcript of {args.ref_dir}"
     else:
-        refs = {it["key"]: reading(it["text"]) for it in items if it.get("text")}
-        label = "reading of the text"
+        refs = {it["key"]: canonical_kana(it["yomi"]) if it.get("yomi") else reading(it["text"])
+                for it in items if it.get("text")}
+        label = "verified reading (yomi) where given, else the reading of the text"
     gender = {it["key"]: it.get("gender", "") for it in items}
     groups = ["all"] + [g for g in ("F", "M") if any(gender[k] == g for k in refs) and len({gender[k] for k in refs}) > 1]
     print(f"reference: {label}, {len(refs)} clips")

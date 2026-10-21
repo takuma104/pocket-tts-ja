@@ -8,6 +8,8 @@ Writes the layout every scripts/eval tool reads (as mimi_ft's recon_jvs.py / rec
     <out>/<NAME>/<key>.wav    stock Mimi encoder -> the decoder given as --decoder NAME=FILE
     <out>/dacvae/<key>.wav    DACVAE (Semantic-DACVAE-Japanese-32dim) at 48 kHz, resampled to 24 kHz
     <out>/dacvae48/<key>.wav  the same at 48 kHz (with --dacvae48; for listening)
+    <out>/<NAME>/<key>.wav    DACVAE encoder -> a stock-wheel Mimi decoder of DACVAE latents
+                              (--dv-decoder NAME=FILE, pocket_tts_ja.wheel_codec; P1-side)
 
 Sources: --jvs N takes the parallel100 clips of the first N female and N male JVS speakers;
 --src DIR takes every wav of a directory, with --meta (jsonl: id and optional text, speaker,
@@ -33,6 +35,7 @@ from pocket_tts_ja.dacvae import SAMPLE_RATE as DACVAE_SR
 from pocket_tts_ja.dacvae import DACVAE, load_wav
 from pocket_tts_ja.jvs import read_genders
 from pocket_tts_ja.mimi_utils import decode, encode, load_mimi, load_pocket_config, to_mono_float
+from pocket_tts_ja.wheel_codec import load_dv_decoder
 
 SR = 24000
 
@@ -88,6 +91,7 @@ def main() -> None:
     parser.add_argument("--gender", default="F", help="gender of --src clips without one in --meta")
     parser.add_argument("--decoder", action="append", default=[], help="NAME=Mimi decoder file (safetensors)")
     parser.add_argument("--dacvae48", action="store_true", help="also keep DACVAE's 48 kHz output")
+    parser.add_argument("--dv-decoder", action="append", default=[], help="NAME=stock-wheel decoder of DACVAE latents")
     args = parser.parse_args()
 
     if args.jvs:
@@ -104,7 +108,8 @@ def main() -> None:
     device = torch.device("cuda")
     mimi_jobs: list[tuple[str, Path | None]] = [("mimi", None)]
     mimi_jobs += [(name, Path(path)) for name, path in (spec.split("=", 1) for spec in args.decoder)]
-    names = ["orig", "dacvae", *(["dacvae48"] if args.dacvae48 else []), *(n for n, _ in mimi_jobs)]
+    dv_jobs = [(name, Path(path)) for name, path in (spec.split("=", 1) for spec in args.dv_decoder)]
+    names = ["orig", "dacvae", *(["dacvae48"] if args.dacvae48 else []), *(n for n, _ in mimi_jobs), *(n for n, _ in dv_jobs)]
 
     def done(name: str) -> bool:
         return all((args.out / name / f"{it['key']}.wav").exists() for it in items)
@@ -122,17 +127,27 @@ def main() -> None:
         if "orig" in todo:
             write_wav(args.out / "orig" / f"{it['key']}.wav", waves[it["key"]], SR)
 
-    if "dacvae" in todo or "dacvae48" in todo:
+    dv_todo = [(n, p) for n, p in dv_jobs if n in todo]
+    if "dacvae" in todo or "dacvae48" in todo or dv_todo:
         codec = DACVAE.load(str(device))
+        dv_models = [(n, load_dv_decoder(p, device)) for n, p in dv_todo]
         for it in items:
             x48 = load_wav(sources[it["key"]], DACVAE_SR)
-            y48 = codec.decode(codec.encode(x48))[0, : len(x48)].cpu().numpy()
-            if "dacvae48" in todo:
-                write_wav(args.out / "dacvae48" / f"{it['key']}.wav", y48, DACVAE_SR)
-            y = soxr.resample(y48, DACVAE_SR, SR, quality="HQ").astype(np.float32)[: len(waves[it["key"]])]
-            write_wav(args.out / "dacvae" / f"{it['key']}.wav", y, SR)
+            z = codec.encode(x48)
+            n24 = len(waves[it["key"]])
+            if "dacvae" in todo or "dacvae48" in todo:
+                y48 = codec.decode(z)[0, : len(x48)].cpu().numpy()
+                if "dacvae48" in todo:
+                    write_wav(args.out / "dacvae48" / f"{it['key']}.wav", y48, DACVAE_SR)
+                y = soxr.resample(y48, DACVAE_SR, SR, quality="HQ").astype(np.float32)[:n24]
+                write_wav(args.out / "dacvae" / f"{it['key']}.wav", y, SR)
+            for name, dv in dv_models:
+                with torch.no_grad():
+                    y = decode(dv, z[0], n24).float().cpu().numpy()
+                write_wav(args.out / name / f"{it['key']}.wav", y, SR)
         del codec
-        print(f"dacvae: {len(items)} clips", flush=True)
+        print(f"dacvae paths ({', '.join(n for n in todo if n.startswith('dacvae') or n in dict(dv_todo))}): "
+              f"{len(items)} clips", flush=True)
 
     stock = load_mimi(load_pocket_config(), device)
     latents = {key: encode(stock, wav, device) for key, wav in waves.items()}
