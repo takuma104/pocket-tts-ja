@@ -340,7 +340,9 @@ main の CC BY 版の生徒は、D1-CC 160k（6 層）と D0-CC 50k（24 層、E
 
 試聴ページ（合成の声なので共有可）: `exp/listening/space_voices/index.html`（JSUT 5 文 × 10 声、列は いまの Space / NC 生徒 + CC decoder / CC 生徒 + 元の Mimi / + keep4k / CC 版の Space / + soup12hp、参照音声とその再構成、UTMOSv2 付き）、`exp/listening/space_voices_ex/index.html`（Space の例文）。female_02 と female_05 を先頭に置いた。
 
-**24 層の生徒（japanese_24l）**: （後述）
+**24 層の生徒（japanese_24l、NC = D0 50k / CC = D0-CC 50k）**: 同じ。Kana-CER は female_02 / female_05 で 0.9〜2.1%（全体 1.8〜2.3%）、類似度は decoder を替えても ±0.03、8–10k のレベルは keep4k → soup4 で +5〜7dB（female_02 −27.3 → −20.2dB、female_05 −34.3 → −27.4dB、CC の生徒）、4–6k の comb は soup4 で 0.2〜0.8dB 下がる（NC の生徒: female_02 2.3 → 1.6、female_05 1.7 → 0.9）。UTMOSv2 は soup4 のほうが高く（female_02 1.91 → 2.25、female_05 1.89 → 2.25、CC の生徒）、UTMOS22 は 0.01〜0.03 低い。
+
+**JSUT 20 文の全体（参考）**: UTMOSv2 は 6 層の CC の生徒で keep4k 3.007 → soup4 3.161（女性 2.713 → 2.939）、UTMOS22 3.334 → 3.291。C5 の jvs_bal と同じ向き。
 
 ## 4. 判断の目安
 
