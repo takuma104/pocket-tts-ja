@@ -425,3 +425,35 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - batch 8 は生成と並ぶと OOM になるので、batch 4 にした(10.4 GB、GAN 込み)。
 - 速度は mel だけで 12 step/s、GAN 込みで 2.8 step/s。30k step で約 2.7 h。
 - step 2500(mel のみ): comb46 1.2 dB(target 5.5)、4–6 kHz の level +8.4 dB。倍音はまだなく、ノイズ状の高域が出ている。GAN 前なので想定どおり。
+- step 5000 / 7500(GAN 1k / 3.5k step): comb46 1.07 → 1.02 dB(target 5.5)、level46 +4.3 → +4.1 dB。高域はまだノイズのまま。
+- 生成と GPU を取り合うため、probe の GAN 区間では生成が 1.8 clips/s まで落ちる(単独の約 1/4)。probe は残り約 2 h。
+
+### 10/22 P2 の準備(58df703, a7dc740)
+
+- **終端の設計を修正**: 教師の latent には平坦な tail がない。
+  - Irodori の duration predictor は窓を発話にぴったり合わせる。最後のモーラは、保存された最後の 2–3 フレームで減衰して終わる。
+  - エネルギーで測った speech end のあとのフレーム数は、s3 で中央値 0。
+  - そこで、§2 の「教師自身の tail 12 フレーム」は、ほぼすべて DACVAE の無音 latent(`src/pocket_tts_ja/dv_silence_latent.npy`、デジタル無音の encode)になる。
+  - mask は uint8(1 発話 / 2 tail)。EOS は tail の最初のフレーム。flow loss は tail にもかける(`pocket_tts_ja.post_eos`、main 版の `z_proj` 抜けを直した)。
+- **学習**(`scripts/train/train_student.py`、`configs/train/P2_6l.yaml`)
+  - upstream の学習ループに、main の `train_ja.py` と同じ差し替えを入れた。
+  - 差し替えるもの: loader、encode_batch、forward、build_models、write_samples(DACVAE で decode)。
+  - D1-CC から warm start する。作り直すのは `input_linear` / `bos_emb` / `speaker_proj_weight` / `flow_net` / `out_eos`。
+  - latent 統計は s3 の発話フレームから計算して固定する。DACVAE latent はもともと mean ≈0.13、std ≈1.0。
+  - CPU の smoke test で、warm start、統計、mask、sample、checkpoint、snapshot まで通ることを確かめた。
+- **評価**
+  - `scripts/eval/student_synth.py`: upstream の batched `generate` を使う。設定は temp 0.3、LSD 1 step、CFG 1.0、EOS −4 + 12 フレーム。出力は 24 kHz。
+  - `runs/irodori_distill/p2_eval.sh`: 生成と採点をまとめて行う。
+  - 現行 CC リリース(D1-CC + soup4)を、同じ項目で並べる。
+    - jsut / jvs_bal / short は main の出力を使う(key・prompt・text が完全に一致する)。
+    - voices は stock wheel 3.3.0 で作った(`scripts/eval/wheel_generate.py`)。
+- **基準値**: 生成音声の自前 F0 の comb(`scripts/eval/tts_comb.py`、voices 女声の 4–6 kHz)
+
+| | 録音(prompt) | 教師 | リリース |
+|---|---:|---:|---:|
+| 女声全体 | 4.4 | 4.2 | 1.6 |
+| female_02 | 5.6 | 5.6 | 1.7 |
+| female_05 | 8.0 | 6.8 | 0.7 |
+
+- NISQA-TTS の教師 − リリース: jsut +0.29、jvs_bal +0.17、short +0.43、voices −0.09。
+  - voices でリリースが上回るのは、男声(3.58 vs 3.28)のため。男声の prompt 自体が合成音声で、NISQA-TTS は 3.31。
