@@ -18,7 +18,9 @@ voiced frames of the female voices, the 4-6 / 6-8 kHz comb and level re the DACV
 (scripts/eval/hf_structure.py). The decoded validation clips are kept for the full scoring.
 
 The latent directories are scanned again at every validation, so the probe can start while P1 is
-still writing them.
+still writing them. Each training clip is decoded with DACVAE once, whole, and its 24 kHz target
+kept in memory (float16, --limit clips at most): decoding the windows at every step took most of
+the GPU time the probe shares with the P1 generation.
 
     uv run python scripts/wheel/train_decoder.py runs/irodori_distill/W1_probe \
         --latents data/irodori_distill/teacher/s3/latents --max-steps 30000
@@ -29,6 +31,7 @@ run_dir/val/<step>/{target,student}/<key>.wav.
 """
 
 import argparse
+import hashlib
 import json
 import random
 import sys
@@ -39,6 +42,7 @@ import numpy as np
 import safetensors.torch
 import soundfile as sf
 import torch
+import torch.nn.functional as F
 import torchaudio.functional as AF
 
 from pocket_tts_ja.codec_losses import (
@@ -56,29 +60,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
 from hf_structure import N_FFT, band_stats, refine_f0, spectrum, voiced_f0  # noqa: E402
 
 SR = 24000
-MARGIN = 16  # latent frames of DACVAE context on each side of a target window (receptive field ~7)
 
 
-def load_latents(dirs: list[Path], min_frames: int, limit: int | None) -> list[np.ndarray]:
-    paths = sorted(p for d in dirs for p in d.glob("*.npy"))
-    random.Random(0).shuffle(paths)
+Clip = tuple[np.ndarray, np.ndarray]  # latents [T, 32] float16, DACVAE decode at 24 kHz [T * 960] float16
+_TARGETS: dict[Path, Clip] = {}
+
+
+@torch.no_grad()
+def load_clips(codec: DACVAE, dirs: list[Path], min_frames: int, limit: int | None) -> list[Clip]:
+    """The clips of the latent directories (the first `limit` in the order of a hash of their
+    names, which new files disturb little), each with its whole DACVAE decode; decoded once per
+    process, dropped from memory when a rescan no longer selects them."""
+    paths = sorted((p for d in dirs for p in d.glob("*.npy")), key=lambda p: hashlib.md5(p.name.encode()).hexdigest())
+    chosen = set(paths[:limit])
+    for p in [p for p in _TARGETS if p not in chosen]:
+        del _TARGETS[p]
+    hop = DV_HOP * SR // DV_SR
     out = []
     for p in paths[:limit]:
-        z = np.load(p)
-        if z.shape[0] >= min_frames:
-            out.append(z)
+        if p not in _TARGETS:
+            z = np.load(p)
+            if z.shape[0] < min_frames:
+                continue
+            y = AF.resample(codec.decode(torch.from_numpy(z.astype(np.float32)).to(codec.device)[None])[0], DV_SR, SR)
+            y = y[: z.shape[0] * hop]
+            _TARGETS[p] = (z, F.pad(y, (0, z.shape[0] * hop - len(y))).half().cpu().numpy())
+        out.append(_TARGETS[p])
     return out
-
-
-def dacvae_target(codec: DACVAE, z: torch.Tensor, start: int, frames: int) -> torch.Tensor:
-    """DACVAE decode of z[start:start + frames] (with MARGIN frames of context each side) at 24 kHz."""
-    s0 = max(0, start - MARGIN)
-    e0 = min(z.shape[0], start + frames + MARGIN)
-    y = codec.decode(z[s0:e0][None])[0]
-    y = AF.resample(y, DV_SR, SR)
-    hop = DV_HOP * SR // DV_SR
-    off = (start - s0) * hop
-    return y[off : off + frames * hop]
 
 
 class EMA:
@@ -137,7 +145,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--latents", type=Path, action="append", required=True, help="directory of <id>.npy")
-    parser.add_argument("--limit", type=int, default=None, help="at most this many training clips")
+    parser.add_argument("--limit", type=int, default=20000, help="at most this many training clips (RAM: ~0.2 MB/s)")
     parser.add_argument("--val-latents", type=Path, default=Path("exp/irodori_distill/eval/voices/teacher_latents"))
     parser.add_argument("--val-items", type=Path, default=Path("exp/irodori_distill/eval/voices/items.jsonl"))
     parser.add_argument("--val-per-voice", type=int, default=4)
@@ -172,11 +180,11 @@ def main() -> None:
     codec = DACVAE.load(str(device))
     for p in codec.model.parameters():
         p.requires_grad_(False)
-    def scan() -> tuple[list[np.ndarray], int]:
-        clips = load_latents(args.latents, args.frames + 1, args.limit)
-        print(f"{len(clips)} training clips, {sum(c.shape[0] for c in clips) / 25 / 3600:.1f} h", flush=True)
+    def scan() -> tuple[list[Clip], int]:
+        clips = load_clips(codec, args.latents, args.frames + 1, args.limit)
+        print(f"{len(clips)} training clips, {sum(c[0].shape[0] for c in clips) / 25 / 3600:.1f} h", flush=True)
         # the context of a batch is drawn so that at least a tenth of the clips are long enough
-        return clips, max(0, min(args.context, int(np.percentile([c.shape[0] for c in clips], 90)) - args.frames))
+        return clips, max(0, min(args.context, int(np.percentile([c[0].shape[0] for c in clips], 90)) - args.frames))
 
     clips, max_context = scan()
     items = {it["key"]: it for it in map(json.loads, open(args.val_items, encoding="utf-8"))}
@@ -227,13 +235,13 @@ def main() -> None:
         inputs, targets = [], []
         with torch.no_grad():
             while len(inputs) < args.batch_size:
-                z_np = clips[rng.randrange(len(clips))]
+                z_np, y_np = clips[rng.randrange(len(clips))]
                 if z_np.shape[0] < length:
                     continue
                 a = 0 if ctx == 0 else rng.randint(0, z_np.shape[0] - length)
-                z = torch.from_numpy(z_np.astype(np.float32)).to(device)
-                inputs.append(z[a : a + length])
-                targets.append(dacvae_target(codec, z, a + ctx, args.frames))
+                inputs.append(torch.from_numpy(z_np[a : a + length].astype(np.float32)).to(device))
+                y = y_np[(a + ctx) * hop : (a + ctx + args.frames) * hop]
+                targets.append(torch.from_numpy(y.astype(np.float32)).to(device))
         x = torch.stack(inputs)
         real = torch.stack(targets)
         fake = decode_window(mimi, x, ctx)[:, 0, : args.frames * hop]

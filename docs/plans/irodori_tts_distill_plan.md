@@ -426,7 +426,29 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - 速度は mel だけで 12 step/s、GAN 込みで 2.8 step/s。30k step で約 2.7 h。
 - step 2500(mel のみ): comb46 1.2 dB(target 5.5)、4–6 kHz の level +8.4 dB。倍音はまだなく、ノイズ状の高域が出ている。GAN 前なので想定どおり。
 - step 5000 / 7500(GAN 1k / 3.5k step): comb46 1.07 → 1.02 dB(target 5.5)、level46 +4.3 → +4.1 dB。高域はまだノイズのまま。
-- 生成と GPU を取り合うため、probe の GAN 区間では生成が 1.8 clips/s まで落ちる(単独の約 1/4)。probe は残り約 2 h。
+- step 10000 / 12500 / 15000: comb46 1.03 / 0.84 / 0.79 dB、level46 +4.2 / +4.1 / +3.9 dB。
+- **倍音の読みは、まだ意味がない。** 原因は 200 Hz(SEANet の内部フレームレート)と 25 Hz の倍数に立つスペクトル線、つまりバズ。
+  - 線の強さ(長時間平均スペクトル、2–10 kHz)
+
+| | 200 Hz の線 |
+|---|---:|
+| probe step 2500(mel のみ) | 12.9 dB |
+| probe step 7500 | 5.7 dB |
+| probe step 15000 | 4.7 dB |
+| 録音 | 0.3 dB |
+| DACVAE | 0.65 dB |
+| 元 Mimi | 1.6 dB |
+| soup4 | 0.4 dB |
+
+  - この線は自前 F0 の comb にも混ざる。step 2500 で comb 4–6k が 8.0 dB(target 4.5)と出たのは、この線のため。
+  - 新しく作った部分(`output_proj` と stride 8 の upsample)を乱数で始めたことで、stock の decoder に分布外の入力が入り、バズが出ていると読む。
+- **線形の橋渡し初期化は失敗した**(`scripts/wheel/bridge_init.py`)。
+  - やり方: upsample を線形補間で始め、`output_proj` を最小二乗で決める。目標は「教師 latent → DACVAE decode → stock Mimi encode」で得た、stock decoder transformer の入力。
+  - 結果: R² 0.146(最適な lag 25 ms)。橋渡しした decoder は 200 Hz の線が 44.7 dB になった。
+  - DACVAE と Mimi の latent は線形には結びつかない。stock の transformer と SEANet は、学習で適応させるしかない。
+- probe は step 15000 から再開した(10/22 07:25)。
+  - 学習 clip の DACVAE decode を一度だけ行い、メモリに保持するようにした(20k clips まで)。速度はほぼ変わらない(2.7 step/s)。
+  - 生成は probe の GAN 区間と ASR に挟まれ、1.3–1.8 clips/s に落ちる(単独の 1/4 以下)。
 
 ### 10/22 P2 の準備(58df703, a7dc740)
 
