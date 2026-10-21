@@ -1,0 +1,53 @@
+# P2: the PoC student (docs/plans/irodori_tts_distill_plan.md, P2). A 6-layer FlowLM on the
+# teacher's (Irodori-TTS v4.1-Small-Yomi v3) DACVAE latents of s3, 25 Hz x 32 dims, prompted with
+# the teacher's own reference latents. Warm-started from main's CC 6L student D1-CC (transformer,
+# text table, tokenizer ja_cc_4k); the parts tied to the latent space start fresh.
+# Run with: uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
+ja_init_from: runs/D1_cc_6l/snapshots/step_00160000.safetensors
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz
+ja_tail_frames: 12
+model_config: configs/model/dv_6l_4k.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/P2_s3_train.jsonl
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/irodori_distill/P2_6l
+batch_size: 64
+grad_accum_steps: 1
+max_steps: 60000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 30
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
