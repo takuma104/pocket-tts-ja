@@ -17,6 +17,9 @@ JSUT, exp/irodori_distill/eval/voices/teacher_latents): mel L1 to the DACVAE dec
 voiced frames of the female voices, the 4-6 / 6-8 kHz comb and level re the DACVAE decode
 (scripts/eval/hf_structure.py). The decoded validation clips are kept for the full scoring.
 
+The latent directories are scanned again at every validation, so the probe can start while P1 is
+still writing them.
+
     uv run python scripts/wheel/train_decoder.py runs/irodori_distill/W1_probe \
         --latents data/irodori_distill/teacher/s3/latents --max-steps 30000
 
@@ -141,7 +144,7 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=64, help="trained window (25 Hz frames)")
     parser.add_argument("--context", type=int, default=50, help="max streaming context before the window")
     parser.add_argument("--prefix-prob", type=float, default=0.3, help="share of batches at the clip start")
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=4, help="4 fits beside the P1 generation (~11 GB)")
     parser.add_argument("--max-steps", type=int, default=30000)
     parser.add_argument("--lr", type=float, default=1e-4, help="stock-initialised modules")
     parser.add_argument("--lr-fresh", type=float, default=3e-4, help="latent projection and upsampling")
@@ -169,10 +172,13 @@ def main() -> None:
     codec = DACVAE.load(str(device))
     for p in codec.model.parameters():
         p.requires_grad_(False)
-    clips = load_latents(args.latents, args.frames + 1, args.limit)
-    print(f"{len(clips)} training clips, {sum(c.shape[0] for c in clips) / 25 / 3600:.1f} h", flush=True)
-    # the context of a batch is drawn so that at least a tenth of the clips are long enough
-    max_context = max(0, min(args.context, int(np.percentile([c.shape[0] for c in clips], 90)) - args.frames))
+    def scan() -> tuple[list[np.ndarray], int]:
+        clips = load_latents(args.latents, args.frames + 1, args.limit)
+        print(f"{len(clips)} training clips, {sum(c.shape[0] for c in clips) / 25 / 3600:.1f} h", flush=True)
+        # the context of a batch is drawn so that at least a tenth of the clips are long enough
+        return clips, max(0, min(args.context, int(np.percentile([c.shape[0] for c in clips], 90)) - args.frames))
+
+    clips, max_context = scan()
     items = {it["key"]: it for it in map(json.loads, open(args.val_items, encoding="utf-8"))}
     per_voice: dict[str, int] = {}
     val: list[tuple[str, str, np.ndarray]] = []
@@ -281,6 +287,7 @@ def main() -> None:
                         "opt_d": opt_d.state_dict(), "ema": ema.shadow, "step": step, "rng": rng.getstate()},
                        ckpt.with_suffix(".tmp"))
             ckpt.with_suffix(".tmp").replace(ckpt)
+            clips, max_context = scan()
             t0 = time.time()
     print("TRAIN_DONE", flush=True)
 

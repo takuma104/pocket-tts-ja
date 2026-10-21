@@ -406,8 +406,22 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 参照 wav は galleria2 から読み取りだけで持ってきた(refs_cc 2,311 + refs_yodas 689)。
   - prompt latent(−16 dB に正規化してから符号化)は `data/irodori_distill/teacher/refs/` に置いた。
 - **QC を計画から変えた**: 「target 完全一致」ではなく、以前の合格音声との書き起こしの一致で判定する(`scripts/teacher/qc.py`、Kana-CER ≤0.02)。同じ seed・text・参照で生成し直すので、以前の書き起こしが手本になる。
+  - 最初の 1,000 clips で確かめた。以前の書き起こしと完全一致が 95.4%、≤0.08 が 99.0%、平均 0.0032。
+  - 外れた 4.6% は、batch 構成による bf16 の差で、別のテイクが出たもの(例: 「テンキモラスベカラズ」→「テンキモラスレカラアズ」)。計画どおり落とす。
 - **speech_end**
   - Irodori の flattening point は、末尾の短い無音(−100 dB)を見逃す。
   - そこで、16 kHz の QC 音声のフレーム RMS(ピークから 45 dB 以内)で決める(`scripts/teacher/pack.py`)。
   - latent は切らずに丸ごと保存する。
-- **生成**: `runs/irodori_distill/p1_generate.sh s3`(detached)。latent は fp16 で、QC 用に 16 kHz の音声も書く。QC と pack が済んだら、音声は消す。
+- **生成**: `runs/irodori_distill/p1_generate.sh s3`(detached)。latent は fp16 で、QC 用に 16 kHz の音声も書く。
+  - 速度は単独で 6.8 clips/s。P1-side と並行すると 4.8 clips/s(s3 は約 8 h)。
+- **QC**: `runs/irodori_distill/p1_pipeline.sh` が行う。
+  - 生成中も 10 分ごとに、新しい clip を kana-whisper にかける。P1-side と並行する間は batch 4(約 7 clips/s)。
+  - セットの生成と書き起こしが揃ったら、qc → pack → 音声の削除。
+  - s3 が終わったら、残りの 6 セットの生成に進む。
+
+### 10/22 P1-side: wheel 用 decoder の probe を開始
+
+- `runs/irodori_distill/W1_probe`(`p1side_probe.sh`、detached)。生成中の s3 latent で学習する(検証ごとに読み直す)。
+- batch 8 は生成と並ぶと OOM になるので、batch 4 にした(10.4 GB、GAN 込み)。
+- 速度は mel だけで 12 step/s、GAN 込みで 2.8 step/s。30k step で約 2.7 h。
+- step 2500(mel のみ): comb46 1.2 dB(target 5.5)、4–6 kHz の level +8.4 dB。倍音はまだなく、ノイズ状の高域が出ている。GAN 前なので想定どおり。
