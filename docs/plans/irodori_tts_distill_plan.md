@@ -569,3 +569,8 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 本機の生成は 10:39 に止めて、切った rows で再開した(既存の clip は飛ばす。止める直前の出力は全部読めることを確かめた)。
 - galleria2 は s3b のあと、s4 s5 s6a s6b s7 s9 を生成する(`p1_generate.sh`)。QC と pack も galleria2 で行う(`runs/irodori_distill/p1_qc_sets.sh`、p1_pipeline.sh と同じ手順)。
 - `p2_start.sh` を書き直した: 本機の s3 と galleria2 の s3b の QC_PACKED を待ち、s3b の pack を取ってきて、`make_split.py --sets s3 s3b --voices-from s3 s3b --name P2_s3` を作り、P2_6l を本機で単独に学習する。held-out の声は P2a と同じ(声の候補は s3 全体)。
+- **s3b の失敗と s3c**: s3 の参照は `refs_cc`(110,885 行)と `refs_yodas`(37,930 行)の 2 つのフォルダにまたがる。galleria2 には refs_cc だけをコピーしていたため、s3b の 37,930 行が参照の読み込みで失敗した。
+  - 止める前に、s3b は生成できた 15,885 clip で QC と pack まで進んだ(15,000 clip が通過。audio は削除済み)。これはそのまま使う。
+  - refs_yodas(689 声、257 MB)をコピーした。失敗した行を `rows_s3c.jsonl` として生成し直している(11:45 ごろから、約 1.6 h)。
+  - s4 も refs_yodas の行を含む。途中で止めたので、再開時に失敗した行も生成される。最後に書かれた 1,600 ファイルは、すべて読めることを確かめた。
+  - `p2_start.sh` は s3 / s3b / s3c の pack を待つ(`make_split.py --sets s3 s3b s3c --voices-from s3 s3b`)。P2 の開始は 13 時台後半の見込み。
