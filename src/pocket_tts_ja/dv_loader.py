@@ -17,6 +17,11 @@ frames (s3: median 0 frames after the speech end). The mask says which is which
 frame, and the flow loss covers the tail too, so the frames the wheel keeps generating after EOS
 are supervised.
 
+P3g (prompt_aug, training only): the prompt can be another teacher output of the same reference
+speaker (its speech frames), a random crop of the prompt, and DACVAE's silence latent before and
+after it, so the student does not depend on the one tightly trimmed 5-12 s reference per voice
+(the JVS prompts of the evaluation are ~5 s with 0.5 s of silence at each end).
+
 Manifest lines (scripts/train/make_split.py): {"id", "transcript", "speaker", "ref_file",
 "lat_file", "lat_start", "lat_len", "speech_end", ...}; lat_file and ref_file are relative to the
 manifest's directory, lat_file holds float16 [frames, 32] arrays back to back.
@@ -47,6 +52,17 @@ logger = logging.getLogger(__name__)
 TAIL_FRAMES = 12  # 0.48 s after the speech end
 MIN_PROMPT_FRAMES = 25  # 1 s, the least prompt_trim_max_sec leaves
 SILENCE_LATENT = Path(__file__).with_name("dv_silence_latent.npy")
+
+
+@dataclass(frozen=True)
+class PromptAug:
+    """P3g: how the training prompts vary (each step with its own probability)."""
+
+    other_prob: float = 0.0  # another teacher output of the same reference speaker
+    crop_prob: float = 0.0  # a random contiguous crop of crop_min_sec or more
+    crop_min_sec: float = 2.0
+    pad_prob: float = 0.0  # 0..pad_max_sec of silence latent before and (independently) after
+    pad_max_sec: float = 0.6
 
 
 @dataclass
@@ -87,6 +103,16 @@ class _Corpus:
         self.length = np.asarray(length, dtype=np.int32)
         self.speech_end = np.asarray(end, dtype=np.int32)
         self.texts = texts
+        self._by_ref: dict[int, npt.NDArray[np.int64]] | None = None
+
+    def other_row(self, i: int, rng: random.Random) -> int:
+        """Another row of row i's reference speaker (i itself if it is the only one)."""
+        if self._by_ref is None:
+            order = np.argsort(self.ref_idx, kind="stable")
+            bounds = np.flatnonzero(np.diff(self.ref_idx[order])) + 1
+            self._by_ref = {int(self.ref_idx[g[0]]): g for g in np.split(order, bounds)}
+        rows = self._by_ref[int(self.ref_idx[i])]
+        return int(rows[rng.randrange(len(rows))])
 
     def __len__(self) -> int:
         return len(self.texts)
@@ -125,6 +151,7 @@ class DvLatentDataLoader(DataLoader):
         prompt_trim_max_sec: float = 0.0,
         final_punct_dropout: float = 0.0,
         tail_frames: int = TAIL_FRAMES,
+        prompt_aug: PromptAug | None = None,
     ):
         # Deliberately not calling DataLoader.__init__: it indexes audio manifests.
         self.jsonl = jsonl
@@ -149,6 +176,7 @@ class DvLatentDataLoader(DataLoader):
         cap = max_voice_prompt_sec if max_voice_prompt_sec > 0 else 30.0
         self.max_prompt_frames = int(cap * frame_rate)
         self.tail_frames = tail_frames
+        self.prompt_aug = prompt_aug
         self.silence = np.load(SILENCE_LATENT)
         assert len(self.silence) >= tail_frames, f"{SILENCE_LATENT} has {len(self.silence)} frames"
 
@@ -156,7 +184,23 @@ class DvLatentDataLoader(DataLoader):
         return self.entries[index]
 
     def _prompt(self, i: int) -> npt.NDArray[np.float16]:
-        prompt = self.corpus.prompt(i)[: self.max_prompt_frames]
+        prompt = self.corpus.prompt(i)
+        aug = self.prompt_aug
+        if aug is not None:
+            if self.rng.random() < aug.other_prob:
+                j = self.corpus.other_row(i, self.rng)
+                if self.corpus.speech_end[j] >= aug.crop_min_sec * self.frame_rate:  # else the reference
+                    prompt = np.asarray(self.corpus.latents(j, int(self.corpus.speech_end[j])))
+            if self.rng.random() < aug.crop_prob:
+                n = self.rng.randint(min(len(prompt), int(aug.crop_min_sec * self.frame_rate)), len(prompt))
+                a = self.rng.randint(0, len(prompt) - n)
+                prompt = prompt[a : a + n]
+            if self.rng.random() < aug.pad_prob:
+                k = int(aug.pad_max_sec * self.frame_rate)
+                steady = self.silence[len(self.silence) // 2 : len(self.silence) // 2 + 1]
+                head, tail = self.rng.randint(0, k), self.rng.randint(0, k)
+                prompt = np.concatenate([np.repeat(steady, head, 0), prompt, np.repeat(steady, tail, 0)])
+        prompt = prompt[: self.max_prompt_frames]
         if self.prompt_trim_max_sec > 0:
             drop = self.rng.randint(0, int(round(self.prompt_trim_max_sec * self.frame_rate)))
             prompt = prompt[: max(prompt.shape[0] - drop, min(prompt.shape[0], MIN_PROMPT_FRAMES))]
@@ -257,6 +301,7 @@ class DvSubprocessDataLoader:
         prompt_trim_max_sec: float = 0.0,
         final_punct_dropout: float = 0.0,
         tail_frames: int = TAIL_FRAMES,
+        prompt_aug: PromptAug | None = None,
     ):
         ctx = torch_mp.get_context("spawn")
         self._queue = ctx.Queue(maxsize=depth)
@@ -278,6 +323,7 @@ class DvSubprocessDataLoader:
                 "prompt_trim_max_sec": prompt_trim_max_sec,
                 "final_punct_dropout": final_punct_dropout,
                 "tail_frames": tail_frames,
+                "prompt_aug": prompt_aug,
             }
             proc = ctx.Process(
                 target=_feed_queue,

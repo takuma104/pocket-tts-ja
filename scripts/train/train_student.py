@@ -24,6 +24,8 @@ them (run_dir/upstream_config.yaml):
   ja_init_from: flow_lm.* safetensors to warm-start from ("" for upstream's random init)
   ja_latent_stats: npz with per-dimension mean and std (scripts/train/make_split.py)
   ja_tail_frames: frames supervised after the speech end (default 12)
+  ja_prompt_aug: P3g, how the training prompts vary (pocket_tts_ja.dv_loader.PromptAug fields;
+    the validation rows keep the teacher's reference)
 
     uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 """
@@ -55,7 +57,13 @@ from pocket_tts.models.mimi import MimiModel
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.utils.config import Config
 from pocket_tts_ja.dacvae import DACVAE, SAMPLE_RATE as DV_SR
-from pocket_tts_ja.dv_loader import TAIL_FRAMES, DvLatentDataLoader, DvSubprocessDataLoader, encode_batch_latents
+from pocket_tts_ja.dv_loader import (
+    TAIL_FRAMES,
+    DvLatentDataLoader,
+    DvSubprocessDataLoader,
+    PromptAug,
+    encode_batch_latents,
+)
 from pocket_tts_ja.post_eos import forward_with_post_eos
 from pocket_tts_ja.wandb_log import make_progress_log_cls
 from pocket_tts_ja.wheel_codec import build_dv_mimi
@@ -204,8 +212,10 @@ def main(config_path: str) -> None:
     init_from = str(ja.pop("ja_init_from", ""))
     stats = Path(str(ja.pop("ja_latent_stats")))
     tail = int(ja.pop("ja_tail_frames", TAIL_FRAMES))  # type: ignore[call-overload]
+    aug_spec = ja.pop("ja_prompt_aug", None)
+    aug = PromptAug(**aug_spec) if isinstance(aug_spec, dict) else None
     assert not ja, f"unknown ja_ config keys: {sorted(ja)}"
-    tt.SubprocessDataLoader = partial(DvSubprocessDataLoader, tail_frames=tail)
+    tt.SubprocessDataLoader = partial(DvSubprocessDataLoader, tail_frames=tail, prompt_aug=aug)
     tt.DataLoader = partial(DvLatentDataLoader, tail_frames=tail)
     tt.encode_batch = encode_batch_latents
     TrainableTTS.forward = forward_with_post_eos  # type: ignore[method-assign]
@@ -213,7 +223,8 @@ def main(config_path: str) -> None:
     tt.write_samples = write_samples_dacvae
     tt.ProgressLog = make_progress_log_cls(
         args.run_dir,
-        {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail},
+        {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail,
+         "ja_prompt_aug": aug_spec},
     )
     tt.save_checkpoint = save_checkpoint_with_snapshot
     tt.main(config_path)
