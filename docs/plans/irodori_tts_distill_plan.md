@@ -719,3 +719,24 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - `make_split.py --sets s3 s3b s3c s4 s5 s6a s6b s7 s9 --voices-from s3 s3b --name P3b_all`: train 303,035 行 / 508.7 h / 2,950 声。
   - 変えるのは学習データだけにした。warm start、step 数(60k)、schedule、latent 統計、検証の行は P2 と同じなので、検証の loss は P2 と直接比べられる。
   - W1a と GPU を分け合う間は 2.1 it/s。単独なら 4.7 it/s。
+
+### 10/22 W1a: 遅延の比較 → K = 2 に決定。W1 の本番を galleria2 で開始
+
+- mel だけで、K = 0 / 2 / 4 を各 5k step 学習した。s3 の 20k clips、batch 16、P3b と GPU を分け合って 11 step/s。
+- 検証(EMA)は、教師の latent と生徒(P2 60k、CFG 1.5)の latent の 2 つ。どちらも、同じ latent の DACVAE decode と比べた mel L1。
+
+| K(遅延) | 学習 mel @5k | 検証 mel @2.5k: 教師 | 〃 生徒 | 検証 mel @5k: 教師 | 〃 生徒 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.248 | 0.509 | 0.513 | 0.368 | 0.350 |
+| **2**(80 ms) | **0.214** | 0.408 | 0.417 | **0.311** | **0.313** |
+| 4(160 ms) | 0.220 | 0.416 | 0.408 | 0.313 | 0.316 |
+
+- **読み**
+  - 2 フレームの先読みで mel が 15% 下がる。DACVAE の latent は、フレーム t の音を後ろのフレームにも載せている。
+  - 4 にしても、それ以上は良くならない。
+  - よって、probe(K = 0)の誤差の一部は、因果 decoder が未来を推測していたことから来ていた。
+- mel だけの学習では波形の位相が揃わないので、F0 誤差と有声率はまだ意味がない(中央値 400 cents 前後で、K による差はない)。これらは GAN が入ってから見る。
+- **W1 本番**(`runs/irodori_distill/w1_main.sh 2` → `W1_main_d2`、galleria2、22:15 開始)
+  - K = 2、batch 16、150k step。
+  - 開始時の target は 87,534 clips(169 h)。検証のたびに読み直す。
+  - 最初の起動は、target の decode(8 プロセス、26 GB)と GPU メモリが衝突して OOM になった。decode を 3 プロセスに減らし、自動の再試行で始まった。
