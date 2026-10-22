@@ -68,7 +68,10 @@ def main() -> None:
         y = AF.resample(codec.decode(torch.from_numpy(z.astype(np.float32))[None])[0], DV_SR, SR)
         y = torch.nn.functional.pad(y[: len(z) * hop], (0, max(0, len(z) * hop - len(y))))
         np.save(args.out / "lat" / p.name, z)
-        np.save(wav_path, (y.clamp(-1, 1) * 32767).round().short().cpu().numpy())
+        part = wav_path.with_suffix(".part")  # renamed when complete: a killed process leaves no short wav
+        with open(part, "wb") as f:
+            np.save(f, (y.clamp(-1, 1) * 32767).round().short().cpu().numpy())
+        part.replace(wav_path)
         done += 1
         seconds += len(z) / 25
         if done % 2000 == 0:

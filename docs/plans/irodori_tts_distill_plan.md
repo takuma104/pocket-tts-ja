@@ -694,3 +694,28 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - (c) JKYB-mini: 採点の移植がまだ。
 - **P3 で詰めること**: データの全量化(s4–s9。galleria2 で 21 時台に生成が終わる)、学習時の参照の長さを広げる、CFG の焼き込み(CFG 1.5 の相当)、12.5 Hz の 2 フレーム連結。
 - **試聴ページ**: `exp/listening/p2_60k/index.html`(ローカル専用)。voices、jvs_bal、JVS の 13–17 s prompt、元の prompt、短文。列は教師、リリース、40k の CFG 1.5、60k、60k の CFG 1.5。
+
+### 10/22 wheel 化の方式は W1 に決定(galleria2 を 1〜2 日)、P3b を開始
+
+- **決定**(§8-3): W1。galleria2 を 1〜2 日使ってよい、との回答(試聴はまだ)。W1 の decoder が元 Mimi の水準にも届かなければ、W0 か W2 に切り替える。
+- **W1 の作り直し**(`scripts/wheel/train_decoder.py`、436647b)
+  - **遅延つきの因果 decoder**(`--delay K`): フレーム t で、フレーム t − K の音声を出す。
+    - DACVAE の encoder は非因果なので、フレーム t の終わりの情報は、その後の latent にも載っている。遅延なしの因果 decoder はそれを推測するしかない。probe(K = 0)のピッチの揺れと有声の欠落は、これが一因と読む。
+    - wheel は EOS のあとのフレーム(`model_recommended_frames_after_eos`)も decode するので、wheel の変更は要らない。代わりに、冒頭に K フレームの無音が入り、遅延が K × 40 ms 増える。
+  - **target は先に一度だけ decode する**(`scripts/wheel/decode_targets.py`)。
+    - DACVAE の decode は 5090 で実時間の約 270 倍。batch にしても速くならない(padding の分だけ遅くなる)。
+    - 各 clip の後ろに、DACVAE の無音 latent を 12 フレーム付ける。生徒が EOS のあとに出すものと同じで、遅延 decoder はここで発話を出し切ることを学ぶ。
+  - batch 16、cosine で LR を 0.1 倍まで下げる、discriminator には各 window の 1 s を切り出して見せる(mimi_ft と同じ)。
+  - 学習中の検証は、教師の latent と、生徒(P2 60k、CFG 1.5)の自由生成の latent の 2 つ。どちらも、同じ latent を DACVAE で decode したものと比べる。
+    - 測るのは mel、F0 誤差(cents の中央値と p90)、有声フレームが有声のまま残る割合、女声の 4–6 kHz の comb。
+  - 速度(本機): batch 16 の GAN 込みで 4.0 step/s、17.4 GB。mel だけなら 20 step/s。
+- **W1a: 遅延の比較**(本機、`runs/irodori_distill/w1_delay_sweep.sh`)
+  - mel だけで K = 0 / 1 / 2 / 4 を各 10k step 学習する(s3 の 20k clips)。
+  - 検証の mel と F0 誤差で K を決め、galleria2 の本番(150k step、約 12 h)に使う。
+- **galleria2**: P1 の生成は 21:24 にすべて終わった(s9: 24,727 clips)。QC と pack は 21:31 に終わった。
+  - W1 の target の decode を、s3b〜s9 の 231k clips について始めた。8 プロセスで約 41 clips/s、約 1.5 h かかる。
+  - 1 プロセスは CPU の 1 コアで頭打ちになる(kernel の起動待ち)ので、8 プロセスにした。
+- **P3b: データの全量化**(本機、`configs/train/P3b_6l.yaml`、`runs/irodori_distill/p3b_start.sh`、21:37 開始)
+  - `make_split.py --sets s3 s3b s3c s4 s5 s6a s6b s7 s9 --voices-from s3 s3b --name P3b_all`: train 303,035 行 / 508.7 h / 2,950 声。
+  - 変えるのは学習データだけにした。warm start、step 数(60k)、schedule、latent 統計、検証の行は P2 と同じなので、検証の loss は P2 と直接比べられる。
+  - W1a と GPU を分け合う間は 2.1 it/s。単独なら 4.7 it/s。
