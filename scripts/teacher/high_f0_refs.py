@@ -11,12 +11,14 @@ DNSMOS >= --min-dnsmos, >= 56 kbps, 5-12 s, Japanese text), one clip per speaker
     scan        median F0 of each clip (hf_structure.voiced_f0 at 24 kHz, -20 dBFS) -> <out>/f0.jsonl
     select      speakers with median F0 >= --min-f0 -> <out>/refs/<speaker>.wav (24 kHz 16 bit)
                 and <out>/refs.jsonl (the fields of refs_cc.jsonl plus f0 / voiced)
+    rows        teacher input rows for those voices -> data/irodori_distill/teacher/rows_<--set>.jsonl
 
     uv run python scripts/teacher/high_f0_refs.py candidates --out data/irodori_distill/synth_src/hi_f0
     ssh galleria2-direct 'cd co/pocket-tts-ja-distill && python3 scripts/teacher/high_f0_refs.py extract \
         --out data/irodori_distill/synth_src/hi_f0 --tar-root /mnt/ext11/Emilia-Dataset/Emilia-YODAS/JA'
     uv run python scripts/teacher/high_f0_refs.py scan --out data/irodori_distill/synth_src/hi_f0
-    uv run python scripts/teacher/high_f0_refs.py select --out data/irodori_distill/synth_src/hi_f0 --min-f0 270
+    uv run python scripts/teacher/high_f0_refs.py select --out data/irodori_distill/synth_src/hi_f0 --min-f0 280
+    uv run python scripts/teacher/high_f0_refs.py rows --set hi1 --per-voice 80
 """
 
 import argparse
@@ -170,9 +172,43 @@ def select(args: argparse.Namespace) -> None:
     print(f"{len(keep)} speakers with median F0 >= {args.min_f0} Hz -> {out}")
 
 
+def rows(args: argparse.Namespace) -> None:
+    """Teacher input rows for the selected voices: sentences of the packed sets (so each carries
+    main's accepted transcript as old_kana for qc.py), drawn at random over all their lengths, with
+    a new voice and seed. Sentences of the P2 validation rows and of its held-out voices stay out."""
+    import random
+
+    teacher = Path("data/irodori_distill/teacher")
+    valid = [json.loads(line) for line in open("data/irodori_distill/mix/P2_s3_valid.jsonl", encoding="utf-8")]
+    held_voices = {r["ref_speaker"] for r in valid}
+    held_texts = {r["text"] for r in valid}
+    pool: dict[str, dict[str, Any]] = {}
+    for s in ("s3", "s3b", "s3c", "s4", "s5", "s6a", "s6b", "s7", "s9"):
+        packed = {json.loads(line)["id"] for line in open(teacher / s / "manifest.jsonl", encoding="utf-8")}
+        for line in open(teacher / f"rows_{s}.jsonl", encoding="utf-8"):
+            r = json.loads(line)
+            if r["id"] in packed and r["ref_speaker"] not in held_voices and r["text"] not in held_texts:
+                pool.setdefault(r["id"], r)
+    voices = [json.loads(line) for line in open(args.out / "refs.jsonl", encoding="utf-8")]
+    rng = random.Random(args.seed)
+    picks = rng.sample(sorted(pool), len(voices) * args.per_voice)
+    path = teacher / f"rows_{args.set}.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        for i, rid in enumerate(picks):
+            r, v = pool[rid], voices[i % len(voices)]
+            row = {"id": f"syn_{args.set}_{i}", "text": r["text"], "ref_wav": str(args.out / "refs" / f"{v['speaker']}.wav"),
+                   "seed": rng.randrange(2**31), "transcript": r["transcript"], "ref_speaker": v["speaker"], "ref_id": v["id"],
+                   "old_kana": r["old_kana"], "old_duration": r["old_duration"], "text_from": rid}
+            if "seconds" in r:  # a fixed length (main's short words), else the duration predictor for the new voice
+                row["seconds"] = r["seconds"]
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"{len(pool)} sentences in the pool; {len(picks)} rows ({args.per_voice} per voice, "
+          f"{sum(pool[p]['old_duration'] for p in picks) / 3600:.1f} h at the old durations) -> {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("stage", choices=["candidates", "extract", "scan", "select"])
+    parser.add_argument("stage", choices=["candidates", "extract", "scan", "select", "rows"])
     parser.add_argument("--out", type=Path, default=SRC / "hi_f0")
     parser.add_argument("--meta", type=Path, default=Path("exp/emilia_survey/emilia_ja_meta.parquet"))
     parser.add_argument("--source-map", type=Path, default=Path("exp/emilia_survey/emilia_source_to_yodas_video.tsv"))
@@ -182,8 +218,11 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--min-f0", type=float, default=270.0)
     parser.add_argument("--max-speakers", type=int, default=600)
+    parser.add_argument("--set", default="hi1", help="rows: the teacher set name (rows_<set>.jsonl)")
+    parser.add_argument("--per-voice", type=int, default=80)
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
-    {"candidates": candidates, "extract": extract, "scan": scan, "select": select}[args.stage](args)
+    {"candidates": candidates, "extract": extract, "scan": scan, "select": select, "rows": rows}[args.stage](args)
 
 
 if __name__ == "__main__":
