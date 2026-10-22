@@ -873,3 +873,22 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - rows_hi1: 1 声 80 文、計 21,600 行(元の長さで 36.4 h)。文は pack 済みのセット全体から無作為に選んだ。短い s9 の単語も含む。P2 の検証の文と声は除いた。
   - QC は、同じ文に main が受け入れた書き起こしとの一致(別の声なので `--max-cer 0.04`)。
   - 生成は galleria2 で、W1 と並行(`runs/irodori_distill/hi1_pipeline.sh`、batch 8)。本機では P3b とその評価の横で GPU が 32 GB に達したため、こちらに移した。
+- **temp 0.5 と LSD 4 step**(`sampling_check3.sh`、すべて CFG 1.5)
+
+| サンプリング | jvs_bal: 1 s 以上の間 | jvs_bal: Kana-CER | jvs_bal: 女声 comb 2.5–4k | female_02 / 05: comb | female_02 / 05: NISQA-TTS / mos |
+|---|---:|---:|---:|---:|---:|
+| 教師 | 1% | 2.05% | 7.6 | 10.9 | – |
+| temp 0.7 | **3%** | 9.26% | 6.5 | 5.1 | −0.29 / −0.16 |
+| temp 0.5 | 13% | **8.05%** | 7.5 | 5.8 | −0.16 / −0.06 |
+| temp 0.5、4 step | 24% | 10.3% | 7.7 | 6.3 | +0.00 / +0.12 |
+| temp 0.7、4 step | 8% | 9.88% | 7.0 | 5.8 | −0.02 / −0.11 |
+
+  - 学習データ内の声(jvs_bal)では、temp 0.5 で女声の倍音が教師並みになる。ただし長い間が 13% 残る。既定の温度は 0.5〜0.7 の間で選ぶ。
+  - 4 step は倍音と NISQA を少し上げるが、間を増やす。
+- **P3h の決定(ユーザー)**: P3g の後に P3h を入れる。
+  - P3h(`configs/train/P3h_6l.yaml`): P3b と P3g の 60k のうち良いほうから、P3b のデータ + hi1 で 20k step を追加学習する。学習率は P3b の半分(1e-4)。
+  - 「良いほう」は、40k の snapshot の temp 0.7 / CFG 1.5 での Kana-CER(voices と jsut の平均)で決める(`runs/irodori_distill/p3h_start.sh`)。
+  - 学習済みの生徒をそのまま全部読み込む `ja_init_full` を `train_student.py` に足した(smoke で step 1 の flow_loss 0.67。P2 の検証は 0.607)。
+  - P3d(CFG 1.5 の焼き込み)の教師は、P3h の 20k にした。データも P3h のもの(`p3d_start.sh` が P3h の終了を待つ)。
+  - 評価(`p3_eval_queue.sh`)は 10k と 20k。20k で全セットと JKYB-mini を測る。P3d の JKYB-mini は CFG なし。voices では、声ごとの comb も出すようにした(`cfg_sweep.sh`)。
+- **見込み**: hi1 の生成は 1.5 clips/s で、05:30 ごろに終わる。P3g の学習は 07:30〜08:00 ごろに終わり、P3h(約 1.5 h)、P3d(約 1.5 h)と続く。W1 は hi1 と並行の間 2.3 step/s で、11 時ごろに 150k に達する見込み。
