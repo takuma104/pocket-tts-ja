@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/model/dv_6l_4k.yaml"))
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--temp", type=float, default=0.3)
+    parser.add_argument("--steps", type=int, default=1, help="LSD decode steps of the flow head per frame")
     parser.add_argument("--cfg", type=float, default=1.0)
     parser.add_argument("--eos-threshold", type=float, default=-4.0)
     parser.add_argument("--eos-countdown", type=int, default=12)
@@ -95,7 +96,7 @@ def main() -> None:
         tokens = [torch.tensor(tokenizer.encode(texts[it["key"]]), dtype=torch.long) for it in batch]
         with torch.no_grad():
             lats = model.generate(
-                tokens, [prompts[it["prompt"]] for it in batch], max_frames=args.max_frames, temp=args.temp,
+                tokens, [prompts[it["prompt"]] for it in batch], max_frames=args.max_frames, temp=args.temp, n_steps=args.steps,
                 cfg_coef=args.cfg, eos_threshold=args.eos_threshold, eos_countdown=args.eos_countdown,
             )
         for it, z in zip(batch, lats, strict=True):
