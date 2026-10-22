@@ -2,6 +2,7 @@
 # teacher's (Irodori-TTS v4.1-Small-Yomi v3) DACVAE latents of s3, 25 Hz x 32 dims, prompted with
 # the teacher's own reference latents. Warm-started from main's CC 6L student D1-CC (transformer,
 # text table, tokenizer ja_cc_4k); the parts tied to the latent space start fresh.
+# Runs alone on the GPU after the generation of s3 (runs/irodori_distill/p2_start.sh).
 # Run with: uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 ja_init_from: runs/D1_cc_6l/snapshots/step_00160000.safetensors
 ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz
@@ -35,14 +36,14 @@ optim:
   warmup_steps: 1000
 
 run_dir: runs/irodori_distill/P2_6l
-batch_size: 64
-grad_accum_steps: 1
+batch_size: 16
+grad_accum_steps: 4        # effective 64; at 25 Hz batch 16 peaks near 15 GB (P2a)
 max_steps: 60000
 stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
 ema_decay: 0.999
 log_freq: 50
 valid_freq: 2500
-num_valid_batches: 30
+num_valid_batches: 60
 ckpt_freq: 5000
 num_ckpt_keep: 2
 sample_freq: 2500

@@ -5,7 +5,8 @@ as in training, and draws every frame from its flow head (temperature 0.3, one L
 drawn frames, put side by side and decoded with DACVAE, show what the student can say when its
 past is right. Next to them the teacher's own latents, decoded the same way. Free generation that
 is much worse than this points at the error build-up of autoregression (P3c); this being bad
-points at capacity, data or the representation.
+points at capacity, data or the representation. --flow-steps above 1 separates the one-step map
+(which LSD learns last) from the backbone and the flow it distils.
 
 Writes an evaluation directory (items.jsonl; gender from the median F0 of the teacher's clip,
 F above 165 Hz) that the usual scripts score: teacher/, <name>/ (24 kHz), orig/ = teacher/ (so
@@ -48,6 +49,7 @@ def main() -> None:
     parser.add_argument("--rows", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--temp", type=float, default=0.3)
+    parser.add_argument("--flow-steps", type=int, default=1, help="steps of the LSD decode (1 as in generation)")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -88,7 +90,7 @@ def main() -> None:
             z = model.backbone_z(fl, normalized, tokens, v, n_voice, cfg_dropout=False)
         with torch.no_grad():
             noise = args.temp**0.5 * torch.randn(*z.shape[:2], fl.ldim, device=device)
-            drawn = model.flow.decode(partial(fl.flow_net, z.float().reshape(-1, z.shape[-1])), noise.reshape(-1, fl.ldim), 1)
+            drawn = model.flow.decode(partial(fl.flow_net, z.float().reshape(-1, z.shape[-1])), noise.reshape(-1, fl.ldim), args.flow_steps)
             drawn = drawn.reshape(*z.shape[:2], fl.ldim) * fl.emb_std + fl.emb_mean
         for k, i in enumerate(idx):
             n = lats[k].shape[0]

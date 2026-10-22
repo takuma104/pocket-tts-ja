@@ -544,3 +544,19 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - `configs/train/P2a_6l.yaml`: P2_6l と同じモデル・初期値・損失。batch 8 × accumulation 8(実効 64)、5k step、warmup 500。
   - 生成の横で 10 GB、1.3 step/s。約 65 分で終わる。
   - その間、パイプラインの ASR は batch 4 で回す(`p1side_probe.pid` に P2a の pid を書いた)。
+- **結果(5k、10:11)**: 経路は最後まで通った。学習は進んでいるが、5k では TF でもまだ内容が出ない。
+  - データの確認: pack 後の latent は clip ごとの latent と一致した(200 行)。DACVAE で decode して書き起こすと、テキストどおりに読んでいる(4 行)。text token も batch に正しく入っている。
+  - 検証の flow_loss: 0.925(1k)→ 0.848 → 0.815 → 0.801 → 0.797(5k)。EOS loss は 0.009。
+  - **TF の Kana-CER**(held-out 200 行。教師の latent は 3.29%): 1k 238%(ASR の暴走)→ 2k 132% → 3k 80% → 4k 66% → **5k 57%**。cosine で LR が 0 に向かうなかでも下がり続けている。
+  - LSD の decode を 8 step にしても 56%(1 step は 57%)。one-step の写像ではなく、backbone と flow head がまだ弱い。
+  - TF の有声フレームは教師の 55–57%。NISQA-TTS は教師 −0.97。
+  - 自由生成(voices 200 文): Kana-CER 128%、EOS なし 48 文、類似度 0.283(教師 0.779、リリース 0.689)、NISQA-TTS はリリース −0.78。
+  - ただし女声の有声フレームの comb は、2.5–4k 8.1 / 4–6k 5.2 dB(教師 8.0 / 4.2、リリース 5.9 / 1.6)。DACVAE 経路の高域の倍音は、生徒の初期でも出ている。
+  - 読み: 学習量が足りない段階。fresh の input / flow head で 5k step(32 万サンプル)は短すぎる。main の生徒は、head の蒸留つきでも 20k で JKYB-mini 74%、60k で 92%。
+- **P2 本番の段取り**
+  - P2 と生成を同時に回すと、どちらも約半分の速さになる(生成は 6.8 → 3.1 clips/s)。並べても得はないので、順番に回す。
+  - s3 の生成を単独で終える(残り約 10.8 万 clip、14 時台)。続けて QC と pack。
+  - `runs/irodori_distill/p2_start.sh`(detached): s3 の QC_PACKED を待ち、`make_split.py --sets s3 --name P2_s3` を作り、P2_6l を単独で学習する。落ちたら checkpoint から再開する。終わったら残りのセット(s4 s5 s6a s6b s7 s9)の生成を始める。
+    - パイプラインが s3 の後に残りを自動で始める部分は止めた。
+  - P2_6l は batch 16 × accumulation 4(実効 64)、valid 60 batch。
+  - `runs/irodori_distill/p2_eval_queue.sh`(detached): 5k / 10k / 20k / 40k / 60k の snapshot ごとに TF(`tf_val/`)と自由生成(voices・jsut。40k 以降は jvs_bal・short も)を測る。
