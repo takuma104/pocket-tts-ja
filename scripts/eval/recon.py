@@ -9,7 +9,10 @@ Writes the layout every scripts/eval tool reads (as mimi_ft's recon_jvs.py / rec
     <out>/dacvae/<key>.wav    DACVAE (Semantic-DACVAE-Japanese-32dim) at 48 kHz, resampled to 24 kHz
     <out>/dacvae48/<key>.wav  the same at 48 kHz (with --dacvae48; for listening)
     <out>/<NAME>/<key>.wav    DACVAE encoder -> a stock-wheel Mimi decoder of DACVAE latents
-                              (--dv-decoder NAME=FILE, pocket_tts_ja.wheel_codec; P1-side)
+                              (--dv-decoder NAME=FILE[:DELAY], pocket_tts_ja.wheel_codec; P1-side,
+                              W1): a decoder trained with train_decoder.py --delay gets DELAY
+                              frames of the silence latent after the clip, and its output is
+                              taken DELAY frames late
 
 Sources: --jvs N takes the parallel100 clips of the first N female and N male JVS speakers;
 --src DIR takes every wav of a directory, with --meta (jsonl: id and optional text, speaker,
@@ -33,6 +36,7 @@ import torch
 
 from pocket_tts_ja.dacvae import SAMPLE_RATE as DACVAE_SR
 from pocket_tts_ja.dacvae import DACVAE, load_wav
+from pocket_tts_ja.dv_loader import SILENCE_LATENT
 from pocket_tts_ja.jvs import read_genders
 from pocket_tts_ja.mimi_utils import decode, encode, load_mimi, load_pocket_config, to_mono_float
 from pocket_tts_ja.wheel_codec import load_dv_decoder
@@ -91,7 +95,8 @@ def main() -> None:
     parser.add_argument("--gender", default="F", help="gender of --src clips without one in --meta")
     parser.add_argument("--decoder", action="append", default=[], help="NAME=Mimi decoder file (safetensors)")
     parser.add_argument("--dacvae48", action="store_true", help="also keep DACVAE's 48 kHz output")
-    parser.add_argument("--dv-decoder", action="append", default=[], help="NAME=stock-wheel decoder of DACVAE latents")
+    parser.add_argument("--dv-decoder", action="append", default=[],
+                        help="NAME=stock-wheel decoder of DACVAE latents[:its delay in frames]")
     args = parser.parse_args()
 
     if args.jvs:
@@ -109,6 +114,12 @@ def main() -> None:
     mimi_jobs: list[tuple[str, Path | None]] = [("mimi", None)]
     mimi_jobs += [(name, Path(path)) for name, path in (spec.split("=", 1) for spec in args.decoder)]
     dv_jobs = [(name, Path(path)) for name, path in (spec.split("=", 1) for spec in args.dv_decoder)]
+    dv_delay = {}
+    for i, (name, path) in enumerate(dv_jobs):
+        if ":" in path.name:
+            file, delay = str(path).rsplit(":", 1)
+            dv_jobs[i] = (name, Path(file))
+            dv_delay[name] = int(delay)
     names = ["orig", "dacvae", *(["dacvae48"] if args.dacvae48 else []), *(n for n, _ in mimi_jobs), *(n for n, _ in dv_jobs)]
 
     def done(name: str) -> bool:
@@ -131,6 +142,7 @@ def main() -> None:
     if "dacvae" in todo or "dacvae48" in todo or dv_todo:
         codec = DACVAE.load(str(device))
         dv_models = [(n, load_dv_decoder(p, device)) for n, p in dv_todo]
+        silence = torch.from_numpy(np.load(SILENCE_LATENT).astype(np.float32)).to(device)
         for it in items:
             x48 = load_wav(sources[it["key"]], DACVAE_SR)
             z = codec.encode(x48)
@@ -142,8 +154,9 @@ def main() -> None:
                 y = soxr.resample(y48, DACVAE_SR, SR, quality="HQ").astype(np.float32)[:n24]
                 write_wav(args.out / "dacvae" / f"{it['key']}.wav", y, SR)
             for name, dv in dv_models:
+                k = dv_delay.get(name, 0)
                 with torch.no_grad():
-                    y = decode(dv, z[0], n24).float().cpu().numpy()
+                    y = decode(dv, torch.cat([z[0], silence[:k]]), n24 + k * 960)[k * 960 :].float().cpu().numpy()
                 write_wav(args.out / name / f"{it['key']}.wav", y, SR)
         del codec
         print(f"dacvae paths ({', '.join(n for n in todo if n.startswith('dacvae') or n in dict(dv_todo))}): "
