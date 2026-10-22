@@ -529,3 +529,18 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
     - 得られるのは言語モデル側の改善(読み・韻律・教師の安定さ)だけ。高域はリリースの天井(倍音なし)のまま。
     - P0b の数字で見ると、NISQA-TTS の codec による差(JVS: DACVAE 4.542 vs soup4 4.380)は、教師 − リリースの差(jsut +0.29)の半分ほど。残りの半分は言語モデル側の差と読める。
     - latent は保存してあるので、DACVAE decode → 24 kHz → Mimi encode で作れる。
+
+### 10/22 P2a: 生成済みの s3 の一部で、P2 の経路を先に通す
+
+- s3 の生成は残り約 12 万 clip(単独で約 5 h)。P2 本番を待つあいだに、経路のバグを早く見つけるための短い学習を回す。
+- **s3a**: 09:22 時点で書き起こし済みの 29,568 clip(`rows_s3a.jsonl`、`teacher/s3a/` は s3 への symlink)。
+  - QC: 一致 89.8%、CER ≤ 0.02 が 93.1%(27,531 clip が通過)、≤ 0.05 が 98.6%。最初の 1,000 clip(95.4% 一致)より少し低い。
+  - pack: speech end 後のフレーム数は中央値 1、0 が 47.6%(s3 の最初の分と同じ)。
+- **split**: `make_split.py --sets s3a --voices-from s3 --name P2a` で、train 27,065 行 / 49.7 h / 2,257 声、valid 466 行 / 39 声。
+  - held-out の声を、全体の s3 と同じにした(`--voices-from` を足した。声の候補を rows_<set>.jsonl からとる)。P2 本番と同じ 50 声のうち、39 声が s3a に入っている。
+  - 長さ: clip は中央値 5.9 s、p99 15.4 s、最大 23.1 s。参照声は中央値 7.8 s、最大 12.0 s。
+- **メモリ**: 25 Hz では系列が main の 2 倍になる。batch 16 で、最長の bucket(23 s + 参照 12 s ≈ 900 フレーム)が 14.5 GB を超えた。
+  - batch 64 を一度に載せるのは、GPU を占有しても無理(推定 50 GB 以上)。P2 本番も accumulation を使う(単独なら batch 16–32 × 4–2 になる見込み)。
+- `configs/train/P2a_6l.yaml`: P2_6l と同じモデル・初期値・損失。batch 8 × accumulation 8(実効 64)、5k step、warmup 500。
+  - 生成の横で 10 GB、1.3 step/s。約 65 分で終わる。
+  - その間、パイプラインの ASR は batch 4 で回す(`p1side_probe.pid` に P2a の pid を書いた)。

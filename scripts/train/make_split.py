@@ -2,6 +2,8 @@
 
 Validation holds out whole voices (--val-voices reference speakers, chosen by hash), so neither
 the voice nor the text of a validation row is ever trained on (every s3 sentence is used once).
+The voices are chosen among those of the sets' rows_<set>.jsonl (or of --voices-from), so a
+packed part of a set holds out the same voices as the whole set.
 The rows get paths relative to the output directory (lat_file -> the shard, ref_file -> the voice
 prompt latent), as pocket_tts_ja.dv_loader reads them.
 
@@ -10,6 +12,7 @@ the speech frames of the training rows (--stats-rows of them), written to <name>
 
     uv run python scripts/train/make_split.py --sets s3 --name P2_s3
     -> data/irodori_distill/mix/P2_s3_{train,valid}.jsonl, P2_s3_stats.npz
+    uv run python scripts/train/make_split.py --sets s3a --voices-from s3 --name P2a
 """
 
 import argparse
@@ -30,6 +33,7 @@ def main() -> None:
     parser.add_argument("--sets", nargs="+", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--val-voices", type=int, default=50)
+    parser.add_argument("--voices-from", nargs="+", help="sets whose rows_<set>.jsonl give the voice pool (default --sets)")
     parser.add_argument("--max-val-rows", type=int, default=2000)
     parser.add_argument("--stats-rows", type=int, default=20000)
     args = parser.parse_args()
@@ -42,8 +46,12 @@ def main() -> None:
             r["lat_file"] = os.path.relpath(d / r["lat_file"], OUT)
             r["ref_file"] = os.path.relpath(TEACHER / "refs" / f"{r['ref_speaker']}.npy", OUT)
             rows.append(r)
-    speakers = sorted({r["ref_speaker"] for r in rows})
-    order = sorted(speakers, key=lambda s: hashlib.md5(s.encode()).hexdigest())
+    pool = {
+        r["ref_speaker"]
+        for s in args.voices_from or args.sets
+        for r in map(json.loads, open(TEACHER / f"rows_{s}.jsonl", encoding="utf-8"))
+    }
+    order = sorted(pool, key=lambda s: hashlib.md5(s.encode()).hexdigest())
     val_voices = set(order[: args.val_voices])
     train = [r for r in rows if r["ref_speaker"] not in val_voices]
     valid = [r for r in rows if r["ref_speaker"] in val_voices]
@@ -68,8 +76,8 @@ def main() -> None:
     np.savez(OUT / f"{args.name}_stats.npz", mean=mean, std=std, frames=len(x))
 
     hours = sum(r["duration"] for r in train) / 3600
-    print(f"{args.name}: train {len(train)} rows / {hours:.1f} h / {len(speakers) - len(val_voices)} voices, "
-          f"valid {len(valid)} rows / {len(val_voices)} voices")
+    print(f"{args.name}: train {len(train)} rows / {hours:.1f} h / {len({r['ref_speaker'] for r in train})} voices, "
+          f"valid {len(valid)} rows / {len({r['ref_speaker'] for r in valid})} voices")
     print(f"stats over {len(x)} speech frames: mean |{np.abs(mean).mean():.3f}| (max {np.abs(mean).max():.3f}), "
           f"std {std.mean():.3f} (min {std.min():.3f}, max {std.max():.3f})")
 

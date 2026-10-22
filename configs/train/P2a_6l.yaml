@@ -1,0 +1,52 @@
+# P2a: an early check of the P2 path on the first packed part of s3 (s3a, 27.5k clips, 49.7 h),
+# beside the P1 generation: batch 8 x 8 accumulation (batch 16 peaks at 14.5 GB on the longest buckets), 5k steps. Same model, init, loss
+# and held-out voices as P2_6l.yaml; only the data, the length and the step budget differ.
+# Run with: uv run python scripts/train/train_student.py configs/train/P2a_6l.yaml
+ja_init_from: runs/D1_cc_6l/snapshots/step_00160000.safetensors
+ja_latent_stats: data/irodori_distill/mix/P2a_stats.npz
+ja_tail_frames: 12
+model_config: configs/model/dv_6l_4k.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/P2a_train.jsonl
+  valid_jsonl: data/irodori_distill/mix/P2a_valid.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 500
+
+run_dir: runs/irodori_distill/P2a_6l
+batch_size: 8
+grad_accum_steps: 8
+max_steps: 5000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 1000
+num_valid_batches: 50
+ckpt_freq: 1000
+num_ckpt_keep: 2
+sample_freq: 1000
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
