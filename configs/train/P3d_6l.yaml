@@ -1,9 +1,10 @@
-# P3d: bake CFG 1.5 into the P3b student (docs/plans/irodori_tts_distill_plan.md, P3d; P2's CFG
-# sweep: 1.5 halves the free-generation Kana-CER, 2.0 starts to cost NISQA). Main's D0 recipe: the
+# P3d: bake CFG 1.5 into the P3h student (P3b / P3g with the hi1 voices; docs/plans/
+# irodori_tts_distill_plan.md, P3d and 10/23; P2's CFG sweep: 1.5 halves the free-generation
+# Kana-CER, 2.0 starts to cost NISQA). Main's D0 recipe: the
 # student starts as an exact copy of its teacher and only moves its backbone output from the
 # conditioned one to the guidance-combined one (the uncond branch drops text and voice); flow and
 # EOS heads stay frozen, no CFG dropout. The loss also covers the tail after the speech, which
-# the wheel generates after EOS. Data, statistics and validation rows are P3b's.
+# the wheel generates after EOS. Data are P3h's, statistics and validation rows P2's (as P3b).
 # Run with: uv run python scripts/train/train_student.py configs/train/P3d_6l.yaml
 ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
 ja_tail_frames: 12
@@ -11,10 +12,10 @@ model_config: configs/model/dv_6l_4k.yaml
 start_from_pretrained: false
 distill_cfg_coef: 1.5
 distill_teacher_config: configs/model/dv_6l_4k.yaml
-distill_teacher_weights: runs/irodori_distill/P3b_6l/snapshots/step_00060000.safetensors
+distill_teacher_weights: runs/irodori_distill/P3h_6l/snapshots/step_00020000.safetensors
 
 data:
-  train_jsonl: data/irodori_distill/mix/P3b_all_train.jsonl
+  train_jsonl: data/irodori_distill/mix/P3h_all_train.jsonl  # P3b's + hi1
   valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
   max_duration_sec: 30.0
   max_voice_prompt_sec: 30.0

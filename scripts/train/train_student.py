@@ -26,6 +26,8 @@ them (run_dir/upstream_config.yaml):
   ja_tail_frames: frames supervised after the speech end (default 12)
   ja_prompt_aug: P3g, how the training prompts vary (pocket_tts_ja.dv_loader.PromptAug fields;
     the validation rows keep the teacher's reference)
+  ja_init_full: P3h, ja_init_from is a student of this latent space: load all of it (strict),
+    the latent-tied parts too
 
     uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 """
@@ -81,7 +83,7 @@ LATENT_TIED = ("input_linear.", "bos_emb", "speaker_proj_weight", "flow_net.", "
 _upstream_save_checkpoint = tt.save_checkpoint
 
 
-def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
+def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
     def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, Config]:
         assert not args.start_from_pretrained and not args.head_distill
         distill = args.distill_cfg_coef > 0
@@ -108,6 +110,9 @@ def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tupl
             state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
             flow_lm.load_state_dict(state, strict=True)
             logger.info(f"CFG distillation ({args.distill_cfg_coef}) of {args.distill_teacher_weights}")
+        elif init_from and init_full:
+            flow_lm.load_state_dict(_load_flow_lm_state(init_from, args.init_from_use_ema), strict=True)
+            logger.info(f"continued from {init_from} (all of it)")
         elif init_from:
             state = _load_flow_lm_state(init_from, args.init_from_use_ema)
             kept = {k: v for k, v in state.items() if not k.startswith(LATENT_TIED)}
@@ -214,17 +219,18 @@ def main(config_path: str) -> None:
     tail = int(ja.pop("ja_tail_frames", TAIL_FRAMES))  # type: ignore[call-overload]
     aug_spec = ja.pop("ja_prompt_aug", None)
     aug = PromptAug(**aug_spec) if isinstance(aug_spec, dict) else None
+    init_full = bool(ja.pop("ja_init_full", False))
     assert not ja, f"unknown ja_ config keys: {sorted(ja)}"
     tt.SubprocessDataLoader = partial(DvSubprocessDataLoader, tail_frames=tail, prompt_aug=aug)
     tt.DataLoader = partial(DvLatentDataLoader, tail_frames=tail)
     tt.encode_batch = encode_batch_latents
     TrainableTTS.forward = forward_with_post_eos  # type: ignore[method-assign]
-    tt.build_models = make_build_models(init_from, stats)
+    tt.build_models = make_build_models(init_from, stats, init_full)
     tt.write_samples = write_samples_dacvae
     tt.ProgressLog = make_progress_log_cls(
         args.run_dir,
         {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail,
-         "ja_prompt_aug": aug_spec},
+         "ja_prompt_aug": aug_spec, "ja_init_full": init_full},
     )
     tt.save_checkpoint = save_checkpoint_with_snapshot
     tt.main(config_path)
