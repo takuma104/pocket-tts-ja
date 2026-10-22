@@ -10,6 +10,10 @@ Like main's scripts/train_ja.py, swaps names inside `training.train` before runn
     flow_net, out_eos: upstream's fresh init), with the latent statistics fixed to
     ja_latent_stats (plan §2; stats_ema_steps must stay 0). The codec is the 25 Hz stock-wheel
     decode side (pocket_tts_ja.wheel_codec), which only gives the trainer its rates.
+    With distill_cfg_coef > 0 (P3d, CFG baking, main's D0 recipe), the student starts as an exact
+    copy of distill_teacher_weights (a student of this latent space, with distill_teacher_config
+    = model_config; ja_init_from unset) and a frozen copy is the teacher; only the backbone and
+    the conditioning train (upstream's latent CFG distillation, flow and EOS heads frozen).
   - write_samples -> decodes with DACVAE (48 kHz)
   - ProgressLog -> also mirrors scalars to wandb (pocket_tts_ja.wandb_log)
 and wraps save_checkpoint to keep an EMA snapshot (flow_lm weights only, safetensors) of every
@@ -29,6 +33,7 @@ import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+import copy
 import logging
 import math
 import resource
@@ -58,7 +63,7 @@ from training.args import TrainArgs, dump_args, load_args
 from training.modules.builders import _load_flow_lm_state, load_model_config
 from training.modules.model import TrainableTTS
 from training.modules.samplers import build_flow
-from training.modules.utils import dit_init, gaussian_init
+from training.modules.utils import disable_grad, dit_init, gaussian_init, stamp_state_names
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +75,10 @@ _upstream_save_checkpoint = tt.save_checkpoint
 
 def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
     def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, Config]:
-        assert not args.start_from_pretrained and not args.head_distill and args.distill_cfg_coef == 0
+        assert not args.start_from_pretrained and not args.head_distill
+        distill = args.distill_cfg_coef > 0
+        if distill:
+            assert args.distill_teacher_config == args.model_config and not init_from, "CFG baking of one model"
         assert args.stats_ema_steps == 0, "the latent statistics are fixed (ja_latent_stats)"
         config = load_model_config(args.model_config, args.model_overrides)
         tts_model = TTSModel._from_pydantic_config(
@@ -88,7 +96,11 @@ def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tupl
         gaussian_init(flow_lm.conditioner)
         nn.init.trunc_normal_(flow_lm.speaker_proj_weight, std=1 / math.sqrt(latent_dim))
         dit_init(flow_lm.flow_net)
-        if init_from:
+        if distill:
+            state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
+            flow_lm.load_state_dict(state, strict=True)
+            logger.info(f"CFG distillation ({args.distill_cfg_coef}) of {args.distill_teacher_weights}")
+        elif init_from:
             state = _load_flow_lm_state(init_from, args.init_from_use_ema)
             kept = {k: v for k, v in state.items() if not k.startswith(LATENT_TIED)}
             missing, unexpected = flow_lm.load_state_dict(kept, strict=False)
@@ -96,6 +108,8 @@ def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tupl
             assert all(k.startswith(LATENT_TIED) for k in missing), missing
             logger.info(f"warm-started from {init_from}; fresh: {sorted({k.split('.')[0] for k in missing})}")
         s = np.load(stats)
+        if distill:
+            assert np.allclose(flow_lm.emb_mean.numpy(), s["mean"], atol=1e-5), "the teacher's statistics differ"
         flow_lm.emb_mean.copy_(torch.from_numpy(s["mean"]))
         flow_lm.emb_std.copy_(torch.from_numpy(s["std"]))
         logger.info(f"latent statistics from {stats} ({int(s['frames'])} frames)")
@@ -103,7 +117,15 @@ def make_build_models(init_from: str, stats: Path) -> Callable[[TrainArgs], tupl
         mimi = build_dv_mimi(config.mimi.frame_rate, latent_dim, init_stock=False).eval()
         for p in mimi.parameters():
             p.requires_grad_(False)
-        return TrainableTTS(flow_lm, flow, args), mimi, config
+        model = TrainableTTS(flow_lm, flow, args)
+        if distill:
+            teacher = copy.deepcopy(flow_lm).eval()
+            disable_grad(teacher)
+            stamp_state_names(teacher)
+            model.__dict__["distill_teacher"] = teacher  # outside the module tree, as upstream
+            disable_grad(flow_lm.flow_net)
+            disable_grad(flow_lm.out_eos)
+        return model, mimi, config
 
     return build_models
 

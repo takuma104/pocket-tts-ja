@@ -9,6 +9,11 @@ main's copy of the backbone pass skipped).
 
 Why: the stock wheel generates frames_after_eos more frames after EOS fires and plays them, but
 upstream training never supervises a frame after the first invalid one.
+
+With a distillation teacher attached (distill_cfg_coef, scripts/train/train_student.py) this is
+upstream's latent CFG distillation over the speech and the tail: the backbone regresses onto the
+frozen teacher's guidance-combined output, and the flow and EOS heads (frozen) see it as they would
+see CFG at generation.
 """
 
 from functools import partial
@@ -28,7 +33,7 @@ def forward_with_post_eos(
     update_stats: bool = False,
     num_voice_prompt_frames: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    assert self.distill_teacher is None and self.head_teacher is None, "post-EOS supervision is for plain training"
+    assert self.head_teacher is None, "head distillation is not supported here"
     if mask.dtype == torch.bool:
         speech = flow_mask = mask
     else:
@@ -38,9 +43,20 @@ def forward_with_post_eos(
     if update_stats and self.training:
         self._update_latent_stats(latents, speech)
     normalized_latents = (latents - fl.emb_mean) / fl.emb_std
-    z = self.backbone_z(
-        fl, normalized_latents, text_tokens, voice_latents, num_voice_prompt_frames, cfg_dropout=self.training
-    )
+    inputs = (normalized_latents, text_tokens, voice_latents, num_voice_prompt_frames)
+    z = self.backbone_z(fl, *inputs, cfg_dropout=self.training)
+
+    if self.distill_teacher is not None:
+        teacher = self.distill_teacher.to(latents.device)
+        with torch.no_grad():
+            z_t = self.backbone_z(teacher, *inputs, cfg_dropout=False)
+            if self.args.distill_cfg_coef != 1.0:
+                z_null = self.backbone_z(teacher, *inputs, cfg_dropout=False, force_null=True)
+                z_t = z_null + self.args.distill_cfg_coef * (z_t - z_null)
+        # every supervised frame and the one after the tail, whose EOS logit stops a generation
+        shifted = torch.cat([flow_mask[:, :1], flow_mask[:, :-1]], dim=1)
+        loss = ((z - z_t).square().mean(dim=-1) * shifted).sum() / shifted.sum().clamp(min=1)
+        return loss, {"distill_mse": loss.detach(), "loss": loss.detach()}
 
     is_eos = ~speech
     is_eos[:, 0] = False
