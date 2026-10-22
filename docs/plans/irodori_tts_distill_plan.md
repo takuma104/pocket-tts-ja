@@ -560,3 +560,11 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
     - パイプラインが s3 の後に残りを自動で始める部分は止めた。
   - P2_6l は batch 16 × accumulation 4(実効 64)、valid 60 batch。
   - `runs/irodori_distill/p2_eval_queue.sh`(detached): 5k / 10k / 20k / 40k / 60k の snapshot ごとに TF(`tf_val/`)と自由生成(voices・jsut。40k 以降は jvs_bal・short も)を測る。
+
+### 10/22 galleria2 の GPU が使えるようになった(ユーザー、10:30 ごろ)
+
+- galleria2 に `~/co/pocket-tts-ja-distill` を作った(このブランチの clone。`third-party/Irodori-TTS` は既存の `~/co/Irodori-TTS` への symlink で、同じ commit 89f9d8f)。教師の checkpoint、DACVAE、kana-whisper は galleria2 に既にある。参照 wav(`synth_src/refs_cc`、846 MB)と rows をコピーした。
+- **s3 を 2 台で分けた**: 本機は rows 0–95k(`rows_s3.jsonl` を 95k 行に切り、全体は `rows_s3_full.jsonl` に残した)。galleria2 は残りの 53,815 行を s3b として生成する(`rows_s3b.jsonl`)。それぞれ約 2 h。
+  - 本機の生成は 10:39 に止めて、切った rows で再開した(既存の clip は飛ばす。止める直前の出力は全部読めることを確かめた)。
+- galleria2 は s3b のあと、s4 s5 s6a s6b s7 s9 を生成する(`p1_generate.sh`)。QC と pack も galleria2 で行う(`runs/irodori_distill/p1_qc_sets.sh`、p1_pipeline.sh と同じ手順)。
+- `p2_start.sh` を書き直した: 本機の s3 と galleria2 の s3b の QC_PACKED を待ち、s3b の pack を取ってきて、`make_split.py --sets s3 s3b --voices-from s3 s3b --name P2_s3` を作り、P2_6l を本機で単独に学習する。held-out の声は P2a と同じ(声の候補は s3 全体)。
