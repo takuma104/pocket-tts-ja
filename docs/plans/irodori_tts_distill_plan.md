@@ -740,3 +740,24 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - K = 2、batch 16、150k step。
   - 開始時の target は 87,534 clips(169 h)。検証のたびに読み直す。
   - 最初の起動は、target の decode(8 プロセス、26 GB)と GPU メモリが衝突して OOM になった。decode を 3 プロセスに減らし、自動の再試行で始まった。
+- **W1 本番の経過**(検証は教師の latent)
+
+| step | mel | 200 Hz の線 | 25 Hz の線 | F0 誤差の中央値 / p90(cents) | 有声のまま残る割合 |
+|---:|---:|---:|---:|---:|---:|
+| 2.5k(mel のみ) | 0.414 | 13.8 | 5.6 | – | – |
+| 7.5k(GAN 3.5k step) | 0.304 | 7.7 | 8.4 | 389 / 1239 | 58% |
+| 10k | 0.296 | 6.0 | 6.9 | 108 / 1118 | 57% |
+| 12.5k | 0.289 | 4.6 | 4.3 | 46 / 236 | 62% |
+| 15k | 0.283 | 4.8 | 2.5 | 16 / 85 | 80% |
+
+  - 線の強さは保存された検証音声から測った(`scripts/eval/spectral_lines.py`。DACVAE decode は 200 Hz 0.57 / 25 Hz −0.15 dB)。de3f723 からは、学習中の検証にも入れた。
+  - 初めのうちの F0 誤差が大きいのは、200 Hz のバズに自己相関の F0 が引っ張られるため。実際は 400 Hz の声を 200 Hz と測る。時間のずれはない(lag 0)。
+  - 25 Hz の線が 7.5k まで上がったのは、probe(K = 0)と同じ経過。probe は 5k の 7.1 dB が最大で、30k では 0.8 dB まで下がった。
+  - 4–6 kHz の level は、7.5k 以降 target の +0.4〜0.8 dB に収まっている。probe は +4 dB だった。
+- target の decode は 22:32 に終わった。GPU メモリを空けるため 5 プロセスを止めたので、133,744 clips になった。
+- **W1 encoder**(`runs/irodori_distill/w1_encoder.sh`、galleria2、W1 本番と並行)
+  - データは、教師の参照(refs_cc + refs_yodas、3,000 声)と Emilia-YODAS JA の 3 本(JA-B000000〜2)。
+  - 遅延 0 と 2 を、各 20k step 学習する。
+- **JKYB-mini**(`runs/irodori_distill/jkyb_eval.sh`): main と同じ 1,500 行と JVS 4 声の割り当てで採点する。
+  - P2 60k(CFG 1.5)は 69.3%(リリースは 95.07%)、EOS なしは 11 文。
+  - prompt の声ごとでは 63.7%(jvs006)から 74.3%(jvs007)。短い JVS の prompt に弱いことの影響が混ざる。
