@@ -324,7 +324,7 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **評価セット**(`eval_sets.py`): voices / jsut / short / jvs_bal / jkyb_mini。jvs_bal は ROTATION の 4 話者を除いた男女各 5 名。
 - **NISQA**(`nisqa_eval.py`): mimi_ft と同じ数値が出ることを確認した(female_02: 4.62 / 4.33 / 4.20 / 3.55)。
 
-### 10/22 P0b: codec の比較 → DACVAE で進めてよい(試聴待ち)
+### 10/22 P0b: codec の比較 → DACVAE で進める(数値と試聴の両方で確定)
 
 - **素材**(`exp/irodori_distill/p0/recon_*`)
   - Space: リリース 10 声の prompt(Irodori 生成)。
@@ -382,7 +382,8 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - Space(10 clips)だけは NISQA-TTS で元 Mimi が録音より上に出る。clip が少なく、prompt 自体が Irodori 生成なので、重くは見ない。
   - 48 kHz の DACVAE 出力(dacvae48)は、24 kHz の素材に対して NISQA mos / col がやや下がる(JVS col 4.327 vs 24 kHz 4.404)。DACVAE が 12 kHz より上に何かを足している。24 kHz の wheel では問題にならない。
 - **試聴ページ**: `exp/listening/p0_codec/index.html`(ローカル専用、JVS を含む)。4 セクション × 7 列。各声から有声の多い clip を 2 つ選んだ。
-- **判定**: 数値の上では、§P0b の基準をすべて満たした。最終判断はユーザーの試聴で行う。
+- **判定**: 数値の上では、§P0b の基準をすべて満たした。
+- **試聴(ユーザー、10/22)**: DACVAE は 48 kHz・24 kHz とも問題なし。録音との差も、48 kHz と 24 kHz の差も聞き分けられなかった。Irodori の生成音声だけでなく、YODAS3 と JVS でも同じ。**DACVAE で確定**。
 
 ### 10/22 P0c: 教師(Yomi v3)の基準値
 
