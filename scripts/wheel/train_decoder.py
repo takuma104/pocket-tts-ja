@@ -26,8 +26,11 @@ Validation (EMA weights) on voices never trained on (the ten release voices x JS
 exp/irodori_distill/eval/voices): the teacher's latents and a student's free generation
 (--val-student), each against DACVAE's decode of the same latents: mel L1; on the voiced frames,
 the F0 error in cents (median, p90) and the share of the target's voiced frames still voiced
-(scripts/eval/hf_structure.py voiced_f0); for the female voices, the 4-6 kHz comb and level. The
-decoded clips are kept for the full scoring (runs/irodori_distill/p1side_eval.sh).
+(scripts/eval/hf_structure.py voiced_f0); for the female voices, the 4-6 kHz comb and level; and
+the decoder's frame-grid buzz, the 200 Hz and 25 Hz lines of the long-term spectrum
+(scripts/eval/spectral_lines.py: ~0.6 dB for the DACVAE decode). Early in training the 200 Hz buzz
+is strong enough that voiced_f0 locks onto it, so the F0 numbers only mean something once the
+line is down. The decoded clips are kept for the full scoring (runs/irodori_distill/p1side_eval.sh).
 
 The target directories are scanned again at every validation, so training can start while
 decode_targets.py is still writing them.
@@ -75,6 +78,7 @@ from pocket_tts_ja.wheel_codec import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
 from hf_structure import N_FFT, band_stats, refine_f0, spectrum, voiced_f0  # noqa: E402
+from spectral_lines import contrast, ltas  # noqa: E402
 
 SR = 24000
 HOP = DV_HOP * SR // DV_SR  # 960 samples per 25 Hz frame
@@ -159,11 +163,13 @@ def validate(
             ss = band_stats(spectrum(s_np[start : start + N_FFT]), f0, step)
             combs.append([ts[2][0], ss[2][0]])
             levels.append(ss[2][1] / (ts[2][1] + 1e-12))
+    db, _ = ltas(sorted((out / "student").glob("*.wav")))
     c = np.mean(combs, axis=0) if combs else np.full(2, np.nan)
     off = np.array(cents) if cents else np.full(1, np.nan)  # an early decoder may voice nothing
     return {"mel": float(np.mean(mels)), "f0_cents_med": float(np.median(off)), "f0_cents_p90": float(np.percentile(off, 90)),
             "voiced": both / max(voiced, 1), "comb46_target": float(c[0]), "comb46": float(c[1]),
-            "level46": float(10 * np.log10(np.mean(levels))) if levels else float("nan")}
+            "level46": float(10 * np.log10(np.mean(levels))) if levels else float("nan"),
+            "line200": contrast(db, SR, 200.0), "line25": contrast(db, SR, 25.0)}
 
 
 def main() -> None:
