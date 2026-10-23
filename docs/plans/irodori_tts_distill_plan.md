@@ -1271,3 +1271,25 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 見るもの: female_02 / 05 の comb が教師(10.0 / 11.7 dB)に近づくか。それと試聴での二重(試聴ページ `exp/listening/s1_24l_<k>/`)。
   - 近づけば S2(24L → 6L、CFG の焼き込み、必要なら head の drifting 蒸留)に進む。近づかなければ、段階的な経路でも高い声は直らない。その場合は別の手を考える。
 - **decoder の高 F0**: W1s(案 A)の結果を待つ。hi1 を足した fine-tune を含む。ユーザーの挙げた 3 clip と、オクターブの跳びを数えて比べる。W1 はすでに stock の重みから始めている。残る手は二つ: decoder を大きくする(wheel 4.0 は `decoder_seanet` で別サイズを読める)、生徒の生成した潜在でも学習する(Kyutai の decoder 蒸留)。
+
+### 10/24 03:50: W1s(案 A)はほぼ効かない。効いたのは高い声を足した 1 本(hi)だけで、平均で薄まる
+
+- **S1**: galleria2 で 02:15 に開始。1.7 step/s、29.8 GB。20k は 05:30 ごろ、40k は 08:50 ごろ。
+- **W1s の soup**(4 本の平均。soup からの相対距離は最大 0.056): P3m 20k の同じ潜在を decode して W1 150k と比べた NISQA-TTS は、voices +0.014、jvs_bal +0.009、jsut +0.012。公式 wheel でも同じ(P3m_20k_wheel_s4: voices +0.020、jvs_bal +0.009)。
+- **4 本のうち hi(hi1 の高い声を足した)だけが、高い声で効く**(ほかの 3 本は ±0.01)
+
+| | DACVAE | W1 150k | **W1s_hi** | W1s_soup4 |
+|---|---:|---:|---:|---:|
+| voices の女声 NISQA-TTS(研究用の経路 3.976) | – | 3.776 | **3.814** | 3.803 |
+| female_02 / 05 の comb 2.5–4k(生徒の DACVAE decode 6.5 / 8.1) | – | 4.4 / 5.6 | **5.0 / 6.5** | 4.6 / 5.8 |
+| Anime 往復: comb 2.5–4k / F0 の p90(cents)/ 有声の残り | 10.3 / 4.5 / 98.9% | 5.1 / 21.3 / 89.0% | **5.9 / 17.4 / 91.5%** | 5.4 / 18.0 / 88.3% |
+| Anime 往復: NISQA-TTS / col | 4.005 / – | 3.369 / 2.915 | **3.453 / 2.991** | 3.416 / 2.936 |
+| y3hi 往復: comb 2.5–4k / NISQA-TTS | 9.2 / 4.313 | 6.4 / 4.045 | **7.1 / 4.112** | 6.6 / 4.070 |
+
+  - jvs_bal と jsut(JVS の声)では、hi も差がない。
+  - decoder の差(研究用の経路との差は NISQA-TTS で jvs_bal −0.22、jsut −0.09)は、10k の fine-tune では動かない。高い声のデータを足すと高い声だけが少し良くなる。それでも DACVAE には遠い(Anime の有声 91.5% vs 98.9%)。
+  - 試聴ページ: `exp/listening/w1s_recon/`(Anime と y3hi。列は元音声、DACVAE、soup4、W1 150k、W1s_hi、W1s_soup4。ユーザーの挙げた dev_c1_090 / dev_c2_090 / dev_c3_097 を含む)。
+- **decoder の次の候補**
+  - (a) hi のレシピを長く回す。10k で効いたのはこれだけ。本機で 40k step 約 3 h。ただし、S1 の評価(24L の生成でピーク 19 GB)とは GPU に同時に載らない(W1 は 17.4 GB)。
+  - (b) decoder を大きくする。wheel 4.0 は `decoder_seanet` / `decoder_transformer` で別のサイズを読める。CPU 速度とのトレードオフになる。
+  - (c) 生徒の生成した潜在でも学習する(Kyutai の decoder 蒸留)。
