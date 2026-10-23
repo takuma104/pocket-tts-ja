@@ -14,6 +14,10 @@ Like main's scripts/train_ja.py, swaps names inside `training.train` before runn
     copy of distill_teacher_weights (a student of this latent space, with distill_teacher_config
     = model_config; ja_init_from unset) and a frozen copy is the teacher; only the backbone and
     the conditioning train (upstream's latent CFG distillation, flow and EOS heads frozen).
+    With distill_teacher_config another (deeper) model of this latent space (S2, main's D1 recipe),
+    the teacher is that model with distill_teacher_weights and the student starts from its bottom
+    and top layers (upstream's shrink_checkpoint.shrink; same d_model, so every other tensor, the
+    heads too, is the teacher's); the CFG target is the teacher's, the rest as above.
   - write_samples -> decodes with DACVAE (48 kHz)
   - ProgressLog -> also mirrors scalars to wandb (pocket_tts_ja.wandb_log)
 and wraps save_checkpoint to keep an EMA snapshot (flow_lm weights only, safetensors) of every
@@ -79,6 +83,7 @@ from training.modules.builders import _load_flow_lm_state, load_model_config
 from training.modules.model import TrainableTTS
 from training.modules.samplers import build_flow
 from training.modules.utils import disable_grad, dit_init, gaussian_init, stamp_state_names
+from training.scripts.shrink_checkpoint import shrink
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +93,25 @@ LATENT_TIED = ("input_linear.", "bos_emb", "speaker_proj_weight", "flow_net.", "
 _upstream_save_checkpoint = tt.save_checkpoint
 
 
+def build_teacher(args: TrainArgs, latent_dim: int) -> nn.Module:
+    """Depth distillation's teacher: the FlowLM of distill_teacher_config, distill_teacher_weights loaded strictly."""
+    config = load_model_config(args.distill_teacher_config, args.distill_teacher_overrides)
+    flow_lm = TTSModel._from_pydantic_config(
+        config, temp=0.7, sampler_decode_steps=1, noise_clamp=None, eos_threshold=0.0, origin=None
+    ).flow_lm
+    d_model = config.flow_lm.transformer.d_model
+    flow_lm.speaker_proj_weight = nn.Parameter(torch.zeros((d_model, latent_dim), dtype=torch.float32))
+    flow_lm.load_state_dict(_load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema), strict=True)
+    return flow_lm.eval()
+
+
 def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
     def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, Config]:
         assert not args.start_from_pretrained and not args.head_distill
         distill = args.distill_cfg_coef > 0
+        depth = distill and args.distill_teacher_config != args.model_config
         if distill:
-            assert args.distill_teacher_config == args.model_config and not init_from, "CFG baking of one model"
+            assert args.distill_teacher_config and not init_from, "the student starts from its teacher"
         assert args.stats_ema_steps == 0, "the latent statistics are fixed (ja_latent_stats)"
         config = load_model_config(args.model_config, args.model_overrides)
         tts_model = TTSModel._from_pydantic_config(
@@ -111,7 +129,13 @@ def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> C
         gaussian_init(flow_lm.conditioner)
         nn.init.trunc_normal_(flow_lm.speaker_proj_weight, std=1 / math.sqrt(latent_dim))
         dit_init(flow_lm.flow_net)
-        if distill:
+        if depth:
+            teacher = build_teacher(args, latent_dim)
+            state, kept = shrink(teacher.state_dict(), len(flow_lm.transformer.layers))
+            flow_lm.load_state_dict(state, strict=True)
+            logger.info(f"depth distillation (CFG {args.distill_cfg_coef}) of {args.distill_teacher_weights}, "
+                        f"student from its layers {kept}")
+        elif distill:
             state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
             flow_lm.load_state_dict(state, strict=True)
             logger.info(f"CFG distillation ({args.distill_cfg_coef}) of {args.distill_teacher_weights}")
@@ -137,7 +161,8 @@ def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> C
             p.requires_grad_(False)
         model = TrainableTTS(flow_lm, flow, args)
         if distill:
-            teacher = copy.deepcopy(flow_lm).eval()
+            if not depth:
+                teacher = copy.deepcopy(flow_lm).eval()
             disable_grad(teacher)
             stamp_state_names(teacher)
             model.__dict__["distill_teacher"] = teacher  # outside the module tree, as upstream

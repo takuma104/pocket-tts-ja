@@ -1293,3 +1293,17 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - (a) hi のレシピを長く回す。10k で効いたのはこれだけ。本機で 40k step 約 3 h。ただし、S1 の評価(24L の生成でピーク 19 GB)とは GPU に同時に載らない(W1 は 17.4 GB)。
   - (b) decoder を大きくする。wheel 4.0 は `decoder_seanet` / `decoder_transformer` で別のサイズを読める。CPU 速度とのトレードオフになる。
   - (c) 生徒の生成した潜在でも学習する(Kyutai の decoder 蒸留)。
+
+### 10/24 04:45: S1 の関門の基準(結果を見る前に決めておく)と S2 の準備
+
+- **ユーザー(10/24 04:00)**: w1s_recon は数値どおりほぼ変わらない(dev_c2_090、dev_c3_097 も変化を感じない)。試聴は昼過ぎになるので、**定量評価で判断して進める**。
+- **6L の基準値**(P3l 40k、温度 0.7、CFG 1.5、研究用の経路): comb 2.5–4k は voices の女声 5.5 dB(教師 8.0)、female_02 / 05 は 6.6 / 7.7(教師 10.0 / 11.7)、jvs_bal の女声は 6.3(教師 7.6)。
+- **S1 の判定**(24L の LSD 1 / 4 / 8 step のうち最良。温度 0.7、CFG 1.5)
+  - **通過**: female_02 / 05 の comb が教師との差の半分以上を詰める(8.3 / 9.7 dB 以上)。voices の女声 comb が 6.8 dB 以上。そのうえで、Kana-CER(voices、jsut)が 6L の +1 pt 以内、voices の女声 NISQA-TTS が 6L 以上。
+  - **途中**: 改善はあるが半分に届かない → 40k / 60k で見直す。
+  - **不通過**: 40k で +0.5 dB 未満 → 段階的な経路をやめる。
+  - 改善が 4 / 8 step にしか出ない場合、S2 の 6L は wheel の既定の 1 step で動くので、head の蒸留も要る(upstream の `head_distill`、`drifting`、1 frame あたり 64 サンプル)。wheel 4.0 の yaml は `flow.type: drifting` を読める。
+- **S2 の準備**(`configs/train/S2_6l.yaml`)
+  - `train_student.py` に depth distillation を足した: `distill_teacher_config` が別の model のとき、教師はその model(重みは strict に読む)。生徒はその下 3 層と上 3 層から始め([0, 1, 2, 21, 22, 23]、upstream の `shrink`)、head は教師のもの(凍結)。
+  - レシピは main の D1(lr 4e-4、cosine)。CFG 1.5 を焼き込む。データ、文の形、文脈ノイズは P3m と同じ。60k step。
+  - smoke(本機、教師は S1 の smoke): 2.7 step/s(60k で約 6 h)、distill_mse は 60 step で 0.046 → 0.007。
