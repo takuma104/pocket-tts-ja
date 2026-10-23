@@ -38,6 +38,11 @@ decode_targets.py is still writing them.
     uv run python scripts/wheel/train_decoder.py runs/irodori_distill/W1_main \
         --targets data/irodori_distill/w1_targets --delay 2 --batch-size 16 --max-steps 150000
 
+--init CKPT starts a fine-tune from another run's checkpoint.pt (decoder, EMA and discriminators;
+fresh optimizers, step 0), for the soup runs of W1s (several short runs from W1 150k with different
+recipes, averaged by scripts/wheel/soup_decoders.py, as main's CC decoder soup4). Pass
+--gan-start 0 --d-warmup 0: the discriminators are trained already.
+
 Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
 (EMA, `mimi.*` names; pocket_tts_ja.wheel_codec.load_dv_decoder), run_dir/progress.jsonl and
 run_dir/val/<step>/<set>/{target,student}/<key>.wav (student aligned to the target: delay removed).
@@ -204,6 +209,7 @@ def main() -> None:
     parser.add_argument("--valid-every", type=int, default=2500)
     parser.add_argument("--save-every", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--init", type=Path, default=None, help="checkpoint.pt of a run to fine-tune from")
     args = parser.parse_args()
 
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -257,6 +263,12 @@ def main() -> None:
         step = state["step"]
         rng.setstate(state["rng"])
         print(f"resumed at step {step}", flush=True)
+    elif args.init is not None:
+        state = torch.load(args.init, map_location=device, weights_only=False)
+        mimi.load_state_dict(state["mimi"])
+        disc.load_state_dict(state["disc"])
+        ema.shadow = state["ema"]
+        print(f"fine-tuning from {args.init} (its step {state['step']})", flush=True)
     base_lrs = [args.lr, args.lr_fresh]
     log = open(args.run_dir / "progress.jsonl", "a")
     gan_len = min(args.frames * HOP, int(args.gan_seconds * SR))
