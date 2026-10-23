@@ -1307,3 +1307,9 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - `train_student.py` に depth distillation を足した: `distill_teacher_config` が別の model のとき、教師はその model(重みは strict に読む)。生徒はその下 3 層と上 3 層から始め([0, 1, 2, 21, 22, 23]、upstream の `shrink`)、head は教師のもの(凍結)。
   - レシピは main の D1(lr 4e-4、cosine)。CFG 1.5 を焼き込む。データ、文の形、文脈ノイズは P3m と同じ。60k step。
   - smoke(本機、教師は S1 の smoke): 2.7 step/s(60k で約 6 h)、distill_mse は 60 step で 0.046 → 0.007。
+- **W1r(decoder の容量)の準備**: SEANet decoder の各段の残差ブロックを 1 → 3 に増やす(`train_decoder.py --res-layers 3`。追加のブロックは dilation 2 / 4)。
+  - `wheel_codec.deepen_decoder` は学習済みの decoder をそのまま深くする。追加のブロックの最後の 1x1 conv を 0 にするので、最初は元と同じ出力になる(W1 150k で最大差 0.0 を確認)。
+  - パラメータは 4.0M → 4.3M。計算量は TTS 全体で約 +20% の見込み。
+  - 公式 wheel 4.0.1 は yaml の `mimi.decoder_seanet` でそのまま読み、生成できた(strict な loader の確認も通った)。
+  - 実験: W1s_hi と同じ 10k step(W1 150k から、w1_targets + hi1、seed 2)。違いは深さだけ。本機の速度は 3.6 step/s、20 GB(W1 は 17.4 GB)。
+  - S1 20k の評価の後に本機で回す(`w1r_start.sh`)。比較は W1s_hi との差: Anime / y3hi の往復(有声の残り、F0、comb、NISQA)と、P3m 20k の潜在の decode(voices、jvs_bal)。
