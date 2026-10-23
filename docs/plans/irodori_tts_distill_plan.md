@@ -1231,3 +1231,22 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **案 A(W1s、ユーザー了承 10/23 22:20)**: W1 の decoder の NISQA の損(P3k の wheel で jvs_bal −0.30、jsut −0.18、主に女声)を、main の soup4 と同じ方法で減らす。
   - W1 150k(`W1_main_d2/checkpoint.pt`: decoder、EMA、識別器)から 10k step の fine-tune を 4 本(`train_decoder.py --init`、lr は本番の半分、cosine)。レシピ: 同じデータ(seed 1)/ hi1 の高い声 21.6k clips を足す(`w1_targets_hi1`)/ 識別器に 1.5 s(本番 1 s。2 s は batch 16 でメモリ不足)/ mel の重みを半分。それを平均する(`scripts/wheel/soup_decoders.py`)。
   - galleria2 で P3m の後に順に回す(`w1s_start.sh`、約 3.5 h)。評価は P3m 20k の同じ潜在をそれぞれの decoder で decode して並べ(voices、jvs_bal、jsut)、soup で package して公式 wheel も通す(`w1s_eval.sh`)。
+
+### 10/24 00:40: P3m 20k(P3l 40k の焼き込み)は P3k より読みが良い。公式 wheel で jsut 3.03%、短文はリリース並み
+
+- **P3m 20k を公式 wheel で**(package `exp/irodori_distill/package/p3m_20k`: W1 150k、閾値 −1、空白を削除)。括弧内は研究用の経路(閾値 −1)
+
+| | リリース(wheel) | P3k 20k(wheel) | **P3m 20k(wheel)** |
+|---|---:|---:|---:|
+| Kana-CER: voices / 2 文 / jsut_chunk2 | **1.28 / 1.47 / 2.68%** | 2.59 / 3.82 / 4.04% | 2.24 / 3.37 / 3.80%(2.20 / 2.91 / 4.33%) |
+| Kana-CER: jvs_bal / 短文 / jsut | **2.01 / 4.18 / 2.05%** | 4.67 / 5.91 / 3.63% | 4.04 / 4.26 / 3.03%(4.12 / 4.18 / 3.29%) |
+| 2 文の抜け(150 中) | 0 | 1 | 1 |
+| 類似度: voices / jvs_bal / jsut | 0.689 / 0.650 / 0.606 | **0.744** / 0.637 / **0.622** | 0.742 / **0.653** / 0.620 |
+| NISQA-TTS: voices / jvs_bal / jsut | **3.699 / 4.201 / 4.127** | 3.664 / 3.919 / 4.018 | 3.682 / 3.908 / 3.989 |
+| 1 s 以上の間: voices / 2 文 / jsut_chunk2 / jsut | **0.0 / 0.7 / 0.0 / 0.1%** | 0.5 / 10.7 / 20.0 / 7.9% | 2.0 / 10.7 / 20.0 / 8.1% |
+
+  - 読みはすべてのセットで P3k より良い(jsut 3.63 → 3.03%、jvs_bal 4.67 → 4.04%、短文 5.91 → 4.26%)。短文はリリースと並んだ。JKYB-mini は研究用の経路で 89.9%(P3k 87.7%、P3l 40k の CFG 1.5 で 90.5%)。
+  - NISQA と類似度は P3k とほぼ同じ。NISQA のリリースとの差(jvs_bal −0.29、jsut −0.14)は decoder の分で、W1s で詰める。
+  - 長い間は変わらない(研究用の経路の jsut_chunk2 は 40% に増えたが、wheel で分けると 20% で P3k と同じ)。
+  - 試聴ページ: `exp/listening/wheel_p3m_20k/index.html`(ローカル専用)。列は教師、リリース、P3k(wheel)、P3m(研究用の経路)、P3m(wheel)。文は P3k のページと同じ。短文も追加。
+- **W1s**: galleria2 で 23:10 に開始。same(23:50 終了)、hi は終了間近、残り 2 本で 02:15 ごろに soup。評価は `w1s_eval.sh`。
