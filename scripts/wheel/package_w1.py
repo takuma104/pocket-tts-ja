@@ -14,6 +14,10 @@ pieces of a sentence over 50 tokens with ", " and packs sentences as "A. B.", fo
 single sentences never have (P3d 20k through the wheel, Kana-CER: jvs_bal 13.6% -> 6.0%, two
 sentences in one chunk 21.6% -> 9.4%).
 
+--eos-threshold sets default_eos_threshold (the stock -4 otherwise), which the wheel and its CLI use
+when the caller passes none: at -4 the students stop after the first of two sentences in a chunk
+(P3j 20k on the GPU path: 14 of 150 pairs; at 0 none, Kana-CER 7.8% -> 3.7%).
+
 Writes into --out:
   <name>.yaml               model config for `pocket-tts generate --config`
   <name>/model.safetensors  FlowLM + Mimi, as the stock loader reads it (--dtype of every tensor)
@@ -86,6 +90,7 @@ def main() -> None:
     parser.add_argument("--frames-after-eos", type=int, default=12, help="model_recommended_frames_after_eos")
     parser.add_argument("--license", default="not for distribution (test package)", help="license line of the yaml header")
     parser.add_argument("--keep-spaces", action="store_true", help="leave spaces in the text (the stock join)")
+    parser.add_argument("--eos-threshold", type=float, default=None, help="default_eos_threshold (stock -4)")
     args = parser.parse_args()
 
     cfg = yaml.safe_load(args.model_config.read_text())
@@ -113,6 +118,8 @@ def main() -> None:
     cfg["flow_lm"]["dtype"] = cfg["mimi"]["dtype"] = args.dtype
     cfg["default_temperature"] = args.temp
     cfg["model_recommended_frames_after_eos"] = args.frames_after_eos
+    if args.eos_threshold is not None:
+        cfg["default_eos_threshold"] = args.eos_threshold
     if not args.keep_spaces:
         cfg["replace_characters"].update({" ": "", "\u3000": ""})
     config_path = args.out / f"{args.name}.yaml"
@@ -129,7 +136,8 @@ def main() -> None:
         model = TTSModel.load_model(config=str(config_path))
         loaded = model.state_dict()
         assert set(loaded) == set(state), sorted(set(loaded) ^ set(state))[:10]
-        print(f"stock loader: {len(loaded)} tensors, temp {model.temp}, voice cloning {model.has_voice_cloning}")
+        print(f"stock loader: {len(loaded)} tensors, temp {model.temp}, EOS threshold {model.eos_threshold}, "
+              f"voice cloning {model.has_voice_cloning}")
     print(f"{config_path}")
     print(f"{weights}  {weights.stat().st_size / 1e6:.1f} MB  sha256 {sha256(weights)[:16]}")
     print(f"{tokenizer}  sha256 {sha256(tokenizer)[:16]}")
