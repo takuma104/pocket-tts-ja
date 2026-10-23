@@ -14,14 +14,27 @@ With a distillation teacher attached (distill_cfg_coef, scripts/train/train_stud
 upstream's latent CFG distillation over the speech and the tail: the backbone regresses onto the
 frozen teacher's guidance-combined output, and the flow and EOS heads (frozen) see it as they would
 see CFG at generation.
+
+P3c (`TrainableTTS.ja_context_noise`, a ContextNoise): in training, a share of the rows sees its
+past latents (the backbone's input) with Gaussian noise of a per-row level, while the flow
+targets stay clean, so a generation that drifts from the teacher's latents (the long silences
+the student falls into at punctuation) still sees inputs like its training ones. The voice
+prompt and a distillation teacher's inputs get the same noisy past.
 """
 
+from dataclasses import dataclass
 from functools import partial
 
 import torch
 import torch.nn.functional as F
 
 from training.modules.model import TrainableTTS
+
+
+@dataclass
+class ContextNoise:
+    prob: float = 0.5  # share of the rows with noise
+    max_std: float = 0.5  # per-row std drawn uniformly in [0, max_std], in normalized latent units
 
 
 def forward_with_post_eos(
@@ -43,7 +56,13 @@ def forward_with_post_eos(
     if update_stats and self.training:
         self._update_latent_stats(latents, speech)
     normalized_latents = (latents - fl.emb_mean) / fl.emb_std
-    inputs = (normalized_latents, text_tokens, voice_latents, num_voice_prompt_frames)
+    past = normalized_latents
+    noise_spec: ContextNoise | None = getattr(self, "ja_context_noise", None)
+    if noise_spec is not None and self.training:
+        rows = torch.rand(latents.shape[0], 1, 1, device=latents.device) < noise_spec.prob
+        std = noise_spec.max_std * torch.rand(latents.shape[0], 1, 1, device=latents.device) * rows
+        past = normalized_latents + std.to(latents.dtype) * torch.randn_like(normalized_latents)
+    inputs = (past, text_tokens, voice_latents, num_voice_prompt_frames)
     z = self.backbone_z(fl, *inputs, cfg_dropout=self.training)
 
     if self.distill_teacher is not None:
