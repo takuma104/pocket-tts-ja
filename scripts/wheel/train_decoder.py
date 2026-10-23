@@ -42,6 +42,10 @@ decode_targets.py is still writing them.
 fresh optimizers, step 0), for the soup runs of W1s (several short runs from W1 150k with different
 recipes, averaged by scripts/wheel/soup_decoders.py, as main's CC decoder soup4). Pass
 --gan-start 0 --d-warmup 0: the discriminators are trained already.
+--res-layers K (with --init) gives the SEANet decoder K residual blocks per stage instead of the
+stock 1 (the wheel reads them from the config's mimi.decoder_seanet): the initial decoder is
+deepened (pocket_tts_ja.wheel_codec.deepen_decoder, the added blocks start as the identity, so the
+run starts from exactly that decoder's output) and the added blocks learn at --lr-fresh.
 
 Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
 (EMA, `mimi.*` names; pocket_tts_ja.wheel_codec.load_dv_decoder), run_dir/progress.jsonl and
@@ -78,7 +82,10 @@ from pocket_tts_ja.wheel_codec import (
     FRESH_MODULES,
     build_dv_mimi,
     decoder_named_parameters,
+    decoder_res_layers,
     decoder_state,
+    deepen_decoder,
+    is_added,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
@@ -210,6 +217,7 @@ def main() -> None:
     parser.add_argument("--save-every", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--init", type=Path, default=None, help="checkpoint.pt of a run to fine-tune from")
+    parser.add_argument("--res-layers", type=int, default=1, help="residual blocks per SEANet decoder stage (> 1 needs --init)")
     args = parser.parse_args()
 
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -237,14 +245,20 @@ def main() -> None:
 
     clips, max_context = rescan()
 
-    mimi = build_dv_mimi().to(device).train()
+    ckpt = args.run_dir / "checkpoint.pt"
+    assert args.res_layers == 1 or args.init is not None or ckpt.exists(), "a deeper decoder starts from --init"
+    mimi = build_dv_mimi(init_stock=args.res_layers == 1, decoder_res_layers=args.res_layers).to(device).train()
     named = decoder_named_parameters(mimi)
     for p in mimi.parameters():
         p.requires_grad_(False)
     for _, p in named:
         p.requires_grad_(True)
-    fresh = [p for n, p in named if n.split(".")[0] in FRESH_MODULES]
-    stock = [p for n, p in named if n.split(".")[0] not in FRESH_MODULES]
+
+    def is_fresh(name: str) -> bool:
+        return name.split(".")[0] in FRESH_MODULES or is_added(name, args.res_layers)
+
+    fresh = [p for n, p in named if is_fresh(n)]
+    stock = [p for n, p in named if not is_fresh(n)]
     opt_g = torch.optim.AdamW([{"params": stock, "lr": args.lr}, {"params": fresh, "lr": args.lr_fresh}],
                               betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators(band_ffts=tuple(args.band_ffts)).to(device)
@@ -252,7 +266,6 @@ def main() -> None:
     mel = MultiScaleMelLoss(SR).to(device)
     ema = EMA(named, args.ema)
     step = 0
-    ckpt = args.run_dir / "checkpoint.pt"
     if ckpt.exists():
         state = torch.load(ckpt, map_location=device, weights_only=False)
         mimi.load_state_dict(state["mimi"])
@@ -265,6 +278,10 @@ def main() -> None:
         print(f"resumed at step {step}", flush=True)
     elif args.init is not None:
         state = torch.load(args.init, map_location=device, weights_only=False)
+        if decoder_res_layers(state["mimi"]) != args.res_layers:
+            state["mimi"] = deepen_decoder(state["mimi"], mimi.state_dict())
+            state["ema"] = deepen_decoder(state["ema"], ema.shadow)
+            print(f"decoder deepened to {args.res_layers} residual blocks per stage", flush=True)
         mimi.load_state_dict(state["mimi"])
         disc.load_state_dict(state["disc"])
         ema.shadow = state["ema"]
