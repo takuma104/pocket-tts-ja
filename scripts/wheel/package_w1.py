@@ -9,6 +9,11 @@ runs without CFG). The decoder and the encoder must share the delay K they were 
 the wheel's audio then starts K frames late, and the frames after EOS (12, as the students were
 trained and evaluated) cover the end.
 
+replace_characters also deletes spaces (unless --keep-spaces): the wheel's chunker joins the comma
+pieces of a sentence over 50 tokens with ", " and packs sentences as "A. B.", forms the teacher's
+single sentences never have (P3d 20k through the wheel, Kana-CER: jvs_bal 13.6% -> 6.0%, two
+sentences in one chunk 21.6% -> 9.4%).
+
 Writes into --out:
   <name>.yaml               model config for `pocket-tts generate --config`
   <name>/model.safetensors  FlowLM + Mimi, as the stock loader reads it (--dtype of every tensor)
@@ -80,6 +85,7 @@ def main() -> None:
     parser.add_argument("--temp", type=float, default=0.7, help="default_temperature")
     parser.add_argument("--frames-after-eos", type=int, default=12, help="model_recommended_frames_after_eos")
     parser.add_argument("--license", default="not for distribution (test package)", help="license line of the yaml header")
+    parser.add_argument("--keep-spaces", action="store_true", help="leave spaces in the text (the stock join)")
     args = parser.parse_args()
 
     cfg = yaml.safe_load(args.model_config.read_text())
@@ -107,6 +113,8 @@ def main() -> None:
     cfg["flow_lm"]["dtype"] = cfg["mimi"]["dtype"] = args.dtype
     cfg["default_temperature"] = args.temp
     cfg["model_recommended_frames_after_eos"] = args.frames_after_eos
+    if not args.keep_spaces:
+        cfg["replace_characters"].update({" ": "", "\u3000": ""})
     config_path = args.out / f"{args.name}.yaml"
     header = HEADER.format(
         name=args.name,
