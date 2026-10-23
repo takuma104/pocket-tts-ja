@@ -1064,3 +1064,34 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - **通しで動いた**。研究用の経路との差は、ほぼ W1 の decoder によるもの(類似度 −0.03、女声の倍音 −2 dB)。
   - リリースとの比較: 類似度は +0.05。NISQA-TTS は −0.09(mos は +0.05)。女声の倍音は 3.2 dB で、リリースの 5.9 dB を下回る。読み(Kana-CER、JKYB-mini 85% vs 95%)もまだ及ばない。
   - 試聴ページ: `exp/listening/wheel_p3d_20k/`(教師、リリース、研究用の経路、公式 wheel)。jsut / jvs_bal / 短文も公式 wheel で生成している(`runs/irodori_distill/wheel_sets.sh`)。
+
+### 10/23 15:20: P3c 10k、公式 wheel での jsut / jvs_bal / 短文、wheel の文の区切り方が生徒の弱点だった → P3e を開始
+
+- **P3c 10k**(文脈ノイズ。temp 0.7、CFG 1.5、P3h 10k との比較)
+  - 1 s 以上の間: jsut 19.9 → 11.6% と減ったが、voices は 2.0 → 7.5%(4 → 15 clips)と増えた。
+  - Kana-CER: voices 3.33 → 2.97%、jsut 5.71 → 5.70%。類似度と NISQA はほぼ同じ。
+  - → 判定は 20k の結果を待つ。
+- **公式 wheel での P3d 20k**(`wheel_sets.sh`。Kana-CER、括弧内は研究用の経路)
+  - jsut 6.50%(5.63%)、短文 5.36%(7.26%)、jvs_bal **13.64%**(5.31%)。
+  - jvs_bal の差は、wheel が 2 チャンクに分けた文だけで生じている(34.2% vs 6.1%)。1 チャンクの文は同等(5.8 vs 5.0%)。
+- **原因は wheel の区切り方**(`split_into_best_sentences`、50 tokens)
+  - 50 tokens を超える文は読点で分け、断片を `", "` でつなぐ。生徒は読点の後の空白を見たことがない(P3h の学習テキストで 0.00%。リリースの YODAS データでは空白のある行が 54%)。
+  - 研究用の経路でも再現する(wheel のチャンクをそのまま入力、P3d 20k): 空白ありで 18.3%、空白を除くと 6.7%。decoder ではなくテキストの問題。
+  - 複数の文を 1 チャンクにまとめる(`"A. B."`)のも生徒には未知だった(学習テキストで 0.09%)。jsut の 2 文を 1 チャンクにした `pair_probe`(150 件)で、P3d 20k は 19.6%(P3h 20k の CFG 1.5 も 19.4%)、1 s 以上の間が 35%。1 文目の後で EOS を出して 2 文目を落とすことが多い。リリースは 1.47%。段落を入力すれば必ず起きるので、実用上の大きな欠点。
+- **学習なしの対処**: package の `replace_characters` に `" " → ""` を足す(wheel はチャンクごとに置換をかけるので、つないだ空白が消える)
+
+| 公式 wheel、P3d 20k の Kana-CER | 標準の config | 空白を削除 | 研究用の経路 | リリース |
+|---|---:|---:|---:|---:|
+| jvs_bal | 13.64% | **5.96%** | 5.31% | 2.01% |
+| jsut の 2 チャンクの 85 件 | 15.80% | **6.10%** | 9.02% | 2.68% |
+| 2 文で 1 チャンク(pair_probe) | 21.60% | **9.42%** | 19.64% | 1.47% |
+
+  - jvs_bal の 1 s 以上の間は 9.0 → 1.0%。NISQA は変わらない(+0.02)。
+  - `package_w1.py` は既定で空白を消すようにした(`--keep-spaces` で無効)。評価セットは `scripts/eval/make_chunk_sets.py` で作る(pair_probe、chunk_probe/chunk_sp・chunk_nosp)。
+  - 2 文の 9.4% はまだリリースに遠く、1 s 以上の間も 31% 残る。
+- **jvs_bal の NISQA**: 公式 wheel は研究用の経路より −0.34(jsut は −0.16、voices は −0.01)。空白の削除では変わらないので、W1 の decoder によるもの。JVS の声で W1 の損失が大きい(A の再学習の候補)。
+- **P3e を galleria2 で開始**(15:08、`configs/train/P3e_6l.yaml`、P3h 20k から 20k step。`pocket_tts_ja.dv_loader.TextAug`)
+  - 行の 30% を、同じ参照話者の 2〜3 行をつないだ 1 行にする。間に 0.25–0.6 s の無音 latent を入れ、50 tokens 以内に収める。テキストは半分を `"A. B."`、半分を `"A.B."` でつなぐ。
+  - 行の 10% で、読点の後に空白を入れる。
+  - それ以外は P3h と同じ(CFG dropout あり)。CFG の焼き込み(P3d の方法)はこの後に行う。P3d の焼き込みは EOS head を凍結するので、1 文目での EOS は直せない。
+  - 評価(`p3e_fetch.sh`): 10k / 20k を pair_probe、chunk_sp、voices、jsut で、20k は jvs_bal、短文、JKYB-mini も。
