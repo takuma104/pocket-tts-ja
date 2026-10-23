@@ -28,8 +28,9 @@ sentences into one chunk of up to 50 tokens joined by a space ("A. B."), and joi
 pieces of a longer sentence with ", "; the teacher's data are single sentences without either
 (0.09% / 0.00% of P3h's rows), and the students drop the second sentence or garble the comma
 pieces. A row can become 2-3 rows of its reference speaker: their speech frames with a gap of
-silence latent between them, the tail after the last, the texts joined as the wheel joins them;
-and a row's commas can get the space after them.
+silence latent between them, the tail after the last, the texts joined as the wheel joins them
+or without the space (a package whose replace_characters deletes spaces: "A.B."); and a row's
+commas can get the space after them.
 
 Manifest lines (scripts/train/make_split.py): {"id", "transcript", "speaker", "ref_file",
 "lat_file", "lat_start", "lat_len", "speech_end", ...}; lat_file and ref_file are relative to the
@@ -88,6 +89,7 @@ class TextAug:
     tries: int = 4  # candidate rows per added sentence
     gap_min_sec: float = 0.25  # silence between the sentences
     gap_max_sec: float = 0.6
+    join_space_prob: float = 1.0  # "A. B." (the stock wheel's join), else "A.B."
     comma_space_prob: float = 0.0  # ", " after every comma
 
 
@@ -276,7 +278,8 @@ class DvLatentDataLoader(DataLoader):
             tail = np.concatenate([tail, self.silence[: want - len(tail)]])
         target = np.concatenate([*parts, tail]) if parts else tail
         target = target[: self.max_target_frames]
-        text = " ".join(self.corpus.texts[j] for j in [*heads, last])
+        sep = " " if self.text_aug is None or self.rng.random() < self.text_aug.join_space_prob else ""
+        text = sep.join(self.corpus.texts[j] for j in [*heads, last])
         if self.text_aug is not None and self.rng.random() < self.text_aug.comma_space_prob:
             text = re.sub(r",(?=\S)", ", ", text)
         tokens = self._tokens(text)

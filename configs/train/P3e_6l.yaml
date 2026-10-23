@@ -4,15 +4,16 @@
 # data have neither (0.09% / 0.00% of the rows), and P3d 20k on the GPU path gives Kana-CER 19.6%
 # on two jsut sentences in one chunk (stops after the first: 1 s pauses in 35%), 18.3% on the
 # wheel's comma pieces (6.7% without the spaces). 30% of the rows become 2-3 rows of their
-# reference speaker with 0.25-0.6 s of silence latent between them, 10% get ", "
-# (pocket_tts_ja.dv_loader.TextAug). Everything else is P3h's, with CFG dropout as before, so
-# the CFG bake (P3d's recipe) follows on it.
+# reference speaker with 0.25-0.6 s of silence latent between them, joined half "A. B." (the
+# stock wheel) and half "A.B." (a package that deletes spaces: P3d 20k there 9.4% vs 21.6%);
+# 10% get ", " (pocket_tts_ja.dv_loader.TextAug). Everything else is P3h's, with CFG dropout as
+# before, so the CFG bake (P3d's recipe) follows on it.
 # Run with: uv run python scripts/train/train_student.py configs/train/P3e_6l.yaml
 ja_init_from: runs/irodori_distill/P3h_6l/snapshots/step_00020000.safetensors
 ja_init_full: true
 ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
 ja_tail_frames: 12
-ja_text_aug: {multi_prob: 0.3, comma_space_prob: 0.1}
+ja_text_aug: {multi_prob: 0.3, join_space_prob: 0.5, comma_space_prob: 0.1}
 model_config: configs/model/dv_6l_4k.yaml
 start_from_pretrained: false
 
