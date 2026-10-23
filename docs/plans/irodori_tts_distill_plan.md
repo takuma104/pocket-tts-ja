@@ -1095,3 +1095,24 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 行の 10% で、読点の後に空白を入れる。
   - それ以外は P3h と同じ(CFG dropout あり)。CFG の焼き込み(P3d の方法)はこの後に行う。P3d の焼き込みは EOS head を凍結するので、1 文目での EOS は直せない。
   - 評価(`p3e_fetch.sh`): 10k / 20k を pair_probe、chunk_sp、voices、jsut で、20k は jvs_bal、短文、JKYB-mini も。
+
+### 10/23 16:10: P3c 20k は P3h 20k より良い。P3e 10k で 2 文・読点の断片が直った → 両方を合わせた P3i を開始
+
+- **P3c 20k**(文脈ノイズ。temp 0.7、CFG 1.5)
+
+| | P3h 20k | P3c 20k |
+|---|---:|---:|
+| Kana-CER: voices / jsut / jvs_bal / 短文 / jsut_trim3 | 3.70 / 5.63 / 5.92 / 7.41 / 6.56% | **2.99 / 4.87 / 5.55 / 6.70** / 6.67% |
+| JKYB-mini | 85.2% | **86.5%** |
+| 類似度: voices / jsut | 0.767 / 0.620 | 0.769 / 0.621 |
+| NISQA-TTS: voices / jsut / jvs_bal | 3.642 / 4.183 / 4.179 | 3.661 / 4.200 / 4.188 |
+| 1 s 以上の間: voices / jsut / jvs_bal / jsut_trim3 | **2.0** / 13.5 / 2.0 / **3.5%** | 5.5 / **7.7 / 1.0** / 5.5% |
+| 女声 comb 2.5–4k | 5.1 | 5.0 |
+
+  - → 文脈ノイズは残す。jsut の長い間は半減した。voices では増えた(4 → 11 clips / 200)。
+- **P3e 10k**(temp 0.7、CFG 1.5、P3h 20k との比較)
+  - 2 文で 1 チャンク(pair_probe): Kana-CER 19.37 → **7.72%**。1 s 以上の間は 34.7 → 29.3%。
+  - wheel の読点の断片(chunk_sp): 19.75 → **7.44%**。
+  - voices: Kana-CER 3.22%、類似度 0.769、NISQA-TTS 3.615、1 s 以上の間 4.5%。単文の性能は保たれている。
+  - pair_probe の長い間の位置(モーラの比で 2 文の境目かどうかを判定。150 clips 中): P3h 20k は境目 35・それ以外 35、P3e 10k は境目 9・それ以外 41。境目の間はほぼ直った。残りは、文中の長い間(P3c が減らしたもの)。
+- **P3i を galleria2 で P3e の後に開始**(`configs/train/P3i_6l.yaml`): P3c 20k から、P3e のテキストの形と文脈ノイズで 20k step。評価は `p3i_fetch.sh`(P3e と同じセット、基準は P3c 20k)。CFG の焼き込みは P3e / P3i の良い方に行う。
