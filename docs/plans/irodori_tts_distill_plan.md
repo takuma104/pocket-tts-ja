@@ -1027,3 +1027,40 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - → データや prompt の間を写しているのではない。**自由生成で生徒自身が陥る**(温度を下げるほど増える)。P3c(誤差蓄積への対策)の条件に当たる。
 - **P3c**(`configs/train/P3c_6l.yaml`、galleria2 で 12:18 から): P3h と同じ設定で、学習時に半分の行の過去 latent にノイズを足す(行ごとの std は 0–0.5、flow の target はきれいなまま。`pocket_tts_ja.post_eos.ContextNoise`、1323798)。13:30 ごろ終わる見込み。snapshot は本機に取ってきて、P3h と同じ評価にかける(`p3c_fetch.sh`)。
 - **encoder(W1e)の 20k**: 遅延 0 は held-out の R² 0.902 / リリースの声 0.871。**遅延 2 は 0.957 / 0.921**。DACVAE の encoder が非因果なので、2 フレームの先読みが効く。生徒での比較は P3d 20k の評価のあと(`w1e_eval.sh`)。
+
+### 10/23 13:30: P3d 20k、wheel 用の encoder の影響、公式 wheel(4.0.1)での初の通し
+
+- **P3d 20k**(CFG 1.5 を焼き込み、temp 0.7、CFG 1.0): P3h 20k の CFG 1.5 と同等。CFG なしで済む(生成の計算が半分)。
+
+| | P3h 20k(CFG 1.5) | P3d 20k(CFG 1.0) |
+|---|---:|---:|
+| Kana-CER: voices / jsut / jvs_bal | 3.70 / 5.63 / 5.92% | 3.08 / 5.63 / 5.31% |
+| 〃 短文 / jsut_trim3 | 7.41 / 6.56% | 7.26 / 6.84% |
+| JKYB-mini | 85.2% | 85.1% |
+| 類似度: voices / jsut / jvs_bal | 0.767 / 0.620 / 0.639 | 0.771 / 0.619 / 0.633 |
+| NISQA-TTS: voices / jsut | 3.642 / 4.183 | 3.621 / 4.173 |
+| 女声 comb 2.5–4k / female_02 / 05 | 5.1 / 5.2 / 6.7 | 5.2 / 5.9 / 7.1 |
+| 1 s 以上の間: voices / jsut | 2.0 / 13.5% | 3.5 / 14.9% |
+
+- **wheel の prompt 経路**(`w1e_eval.sh`: P3d 20k、prompt を W1e の encoder で作る。DACVAE の prompt との比較)
+  - voices: Kana-CER 3.08 → 3.17%(遅延 2)/ 3.48%(遅延 0)、類似度 0.771 → 0.764 / 0.764、NISQA-TTS +0.08 / +0.15。
+  - jsut: Kana-CER 5.63 → 5.39 / 5.07%、類似度 0.619 → 0.619 / 0.611、NISQA-TTS −0.04 / −0.02。
+  - → encoder による損失はほぼない。**遅延 2 を使い、speaker_proj の FT は省く**。
+- **package と公式 wheel**
+  - `scripts/wheel/package_w1.py`: 生徒の snapshot、W1 の decoder、W1e の encoder を、model config と model.safetensors にまとめる。stock loader で strict に読めることを確かめる(214 tensors、voice cloning あり)。既定は temperature 0.7、frames_after_eos 12。
+  - PyPI の pocket-tts 4.0.1 は third-party/pocket-tts と同一(diff なし)。
+  - `scripts/wheel/wheel_generate.py`(main の版を評価セットの形式に合わせた): 公式 wheel の公開 API だけで CPU 生成する。
+- **公式 wheel での voices**(P3d 20k + W1 150k + W1e 遅延 2。`uvx --from pocket-tts==4.0.1`、6 worker × 2 thread で 200 clips を 315 s、EOS なしは 0)
+
+| | リリース | P3d 20k(研究用の経路、DACVAE) | **P3d 20k(公式 wheel)** |
+|---|---:|---:|---:|
+| Kana-CER | **1.28%** | 3.08% | 3.17% |
+| 類似度 | 0.689 | **0.771** | 0.738 |
+| NISQA-TTS / mos / col | **3.699** / 4.186 / 4.058 | 3.621 / 4.249 / 4.149 | 3.609 / **4.237** / 4.049 |
+| 1 s 以上の間 | **0.0%** | 3.5% | 3.0% |
+| 女声 comb 2.5–4k | **5.9** | 5.2 | 3.2 |
+| 〃 female_02 / 05 | **6.8 / 7.3** | 5.9 / 7.1 | 4.2 / 4.8 |
+
+  - **通しで動いた**。研究用の経路との差は、ほぼ W1 の decoder によるもの(類似度 −0.03、女声の倍音 −2 dB)。
+  - リリースとの比較: 類似度は +0.05。NISQA-TTS は −0.09(mos は +0.05)。女声の倍音は 3.2 dB で、リリースの 5.9 dB を下回る。読み(Kana-CER、JKYB-mini 85% vs 95%)もまだ及ばない。
+  - 試聴ページ: `exp/listening/wheel_p3d_20k/`(教師、リリース、研究用の経路、公式 wheel)。jsut / jvs_bal / 短文も公式 wheel で生成している(`runs/irodori_distill/wheel_sets.sh`)。
