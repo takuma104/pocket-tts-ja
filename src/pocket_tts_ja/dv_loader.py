@@ -22,6 +22,15 @@ speaker (its speech frames), a random crop of the prompt, and DACVAE's silence l
 after it, so the student does not depend on the one tightly trimmed 5-12 s reference per voice
 (the JVS prompts of the evaluation are ~5 s with 0.5 s of silence at each end).
 
+P3e (text_aug, training only): the text forms the stock wheel's chunker makes
+(pocket_tts.models.text_chunking.split_into_best_sentences). The wheel packs consecutive
+sentences into one chunk of up to 50 tokens joined by a space ("A. B."), and joins the comma
+pieces of a longer sentence with ", "; the teacher's data are single sentences without either
+(0.09% / 0.00% of P3h's rows), and the students drop the second sentence or garble the comma
+pieces. A row can become 2-3 rows of its reference speaker: their speech frames with a gap of
+silence latent between them, the tail after the last, the texts joined as the wheel joins them;
+and a row's commas can get the space after them.
+
 Manifest lines (scripts/train/make_split.py): {"id", "transcript", "speaker", "ref_file",
 "lat_file", "lat_start", "lat_len", "speech_end", ...}; lat_file and ref_file are relative to the
 manifest's directory, lat_file holds float16 [frames, 32] arrays back to back.
@@ -32,6 +41,7 @@ import logging
 import multiprocessing.queues
 import queue
 import random
+import re
 import signal
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -63,6 +73,22 @@ class PromptAug:
     crop_min_sec: float = 2.0
     pad_prob: float = 0.0  # 0..pad_max_sec of silence latent before and (independently) after
     pad_max_sec: float = 0.6
+
+
+SENTENCE_END = ".!?…"  # what the wheel's splitter ends a sentence on (after replace_characters)
+
+
+@dataclass(frozen=True)
+class TextAug:
+    """P3e: the wheel's chunk forms in training (each with its own probability)."""
+
+    multi_prob: float = 0.0  # 2..max_sentences rows of the reference speaker as one, "A. B."
+    max_sentences: int = 3
+    max_tokens: int = 50  # the wheel's chunk size (generate_audio's max_tokens)
+    tries: int = 4  # candidate rows per added sentence
+    gap_min_sec: float = 0.25  # silence between the sentences
+    gap_max_sec: float = 0.6
+    comma_space_prob: float = 0.0  # ", " after every comma
 
 
 @dataclass
@@ -152,6 +178,7 @@ class DvLatentDataLoader(DataLoader):
         final_punct_dropout: float = 0.0,
         tail_frames: int = TAIL_FRAMES,
         prompt_aug: PromptAug | None = None,
+        text_aug: TextAug | None = None,
     ):
         # Deliberately not calling DataLoader.__init__: it indexes audio manifests.
         self.jsonl = jsonl
@@ -177,8 +204,11 @@ class DvLatentDataLoader(DataLoader):
         self.max_prompt_frames = int(cap * frame_rate)
         self.tail_frames = tail_frames
         self.prompt_aug = prompt_aug
+        self.text_aug = text_aug
         self.silence = np.load(SILENCE_LATENT)
         assert len(self.silence) >= tail_frames, f"{SILENCE_LATENT} has {len(self.silence)} frames"
+        if text_aug is not None:
+            assert len(self.silence) >= text_aug.gap_max_sec * frame_rate, f"{SILENCE_LATENT} is shorter than gap_max_sec"
 
     def get_entry(self, index: int) -> int:  # type: ignore[override]
         return self.entries[index]
@@ -206,15 +236,50 @@ class DvLatentDataLoader(DataLoader):
             prompt = prompt[: max(prompt.shape[0] - drop, min(prompt.shape[0], MIN_PROMPT_FRAMES))]
         return prompt
 
+    def _sentences(self, i: int) -> list[int]:
+        """Row i, or (TextAug.multi_prob) row i followed by other rows of its reference speaker
+        while the joined text stays one chunk of the wheel and the target fits."""
+        rows = [i]
+        aug = self.text_aug
+        if aug is None or self.rng.random() >= aug.multi_prob:
+            return rows
+        gap_max = int(aug.gap_max_sec * self.frame_rate)
+        frames = int(self.corpus.speech_end[i])
+        for _ in range(aug.max_sentences - 1):
+            if self.corpus.texts[rows[-1]][-1:] not in SENTENCE_END:
+                break
+            for _ in range(aug.tries):
+                j = self.corpus.other_row(i, self.rng)
+                more = frames + gap_max + int(self.corpus.speech_end[j])
+                text = " ".join(self.corpus.texts[r] for r in [*rows, j])
+                if j not in rows and more + self.tail_frames <= self.max_target_frames and len(self.tokenize(text)) <= aug.max_tokens:
+                    rows.append(j)
+                    frames = more
+                    break
+            else:
+                break
+        return rows
+
     def _sample(self, entry: int) -> tuple[Any, ...]:  # type: ignore[override]
         i = int(entry)
-        speech = int(self.corpus.speech_end[i])
-        want = speech + self.tail_frames
-        target = np.asarray(self.corpus.latents(i, want))
-        if len(target) < want:
-            target = np.concatenate([target, self.silence[: want - len(target)]])
+        *heads, last = self._sentences(i)
+        parts = []
+        for j in heads:
+            parts.append(np.asarray(self.corpus.latents(j, int(self.corpus.speech_end[j]))))
+            assert self.text_aug is not None
+            gap = self.rng.randint(int(self.text_aug.gap_min_sec * self.frame_rate), int(self.text_aug.gap_max_sec * self.frame_rate))
+            parts.append(self.silence[:gap])
+        speech = sum(len(p) for p in parts) + int(self.corpus.speech_end[last])
+        want = int(self.corpus.speech_end[last]) + self.tail_frames
+        tail = np.asarray(self.corpus.latents(last, want))
+        if len(tail) < want:
+            tail = np.concatenate([tail, self.silence[: want - len(tail)]])
+        target = np.concatenate([*parts, tail]) if parts else tail
         target = target[: self.max_target_frames]
-        tokens = self._tokens(self.corpus.texts[i])
+        text = " ".join(self.corpus.texts[j] for j in [*heads, last])
+        if self.text_aug is not None and self.rng.random() < self.text_aug.comma_space_prob:
+            text = re.sub(r",(?=\S)", ", ", text)
+        tokens = self._tokens(text)
         return (
             tokens,
             torch.from_numpy(np.asarray(self._prompt(i), dtype=np.float32)),
@@ -302,6 +367,7 @@ class DvSubprocessDataLoader:
         final_punct_dropout: float = 0.0,
         tail_frames: int = TAIL_FRAMES,
         prompt_aug: PromptAug | None = None,
+        text_aug: TextAug | None = None,
     ):
         ctx = torch_mp.get_context("spawn")
         self._queue = ctx.Queue(maxsize=depth)
@@ -324,6 +390,7 @@ class DvSubprocessDataLoader:
                 "final_punct_dropout": final_punct_dropout,
                 "tail_frames": tail_frames,
                 "prompt_aug": prompt_aug,
+                "text_aug": text_aug,
             }
             proc = ctx.Process(
                 target=_feed_queue,

@@ -30,6 +30,8 @@ them (run_dir/upstream_config.yaml):
     the latent-tied parts too
   ja_context_noise: P3c, noise on the past latents in training (pocket_tts_ja.post_eos.ContextNoise
     fields)
+  ja_text_aug: P3e, the stock wheel's chunk forms in training: several sentences in one row,
+    ", " after commas (pocket_tts_ja.dv_loader.TextAug fields; the validation rows stay single)
 
     uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 """
@@ -66,6 +68,7 @@ from pocket_tts_ja.dv_loader import (
     DvLatentDataLoader,
     DvSubprocessDataLoader,
     PromptAug,
+    TextAug,
     encode_batch_latents,
 )
 from pocket_tts_ja.post_eos import ContextNoise, forward_with_post_eos
@@ -224,8 +227,10 @@ def main(config_path: str) -> None:
     init_full = bool(ja.pop("ja_init_full", False))
     noise_spec = ja.pop("ja_context_noise", None)
     TrainableTTS.ja_context_noise = ContextNoise(**noise_spec) if isinstance(noise_spec, dict) else None  # type: ignore[attr-defined]
+    text_spec = ja.pop("ja_text_aug", None)
+    text_aug = TextAug(**text_spec) if isinstance(text_spec, dict) else None
     assert not ja, f"unknown ja_ config keys: {sorted(ja)}"
-    tt.SubprocessDataLoader = partial(DvSubprocessDataLoader, tail_frames=tail, prompt_aug=aug)
+    tt.SubprocessDataLoader = partial(DvSubprocessDataLoader, tail_frames=tail, prompt_aug=aug, text_aug=text_aug)
     tt.DataLoader = partial(DvLatentDataLoader, tail_frames=tail)
     tt.encode_batch = encode_batch_latents
     TrainableTTS.forward = forward_with_post_eos  # type: ignore[method-assign]
@@ -234,7 +239,8 @@ def main(config_path: str) -> None:
     tt.ProgressLog = make_progress_log_cls(
         args.run_dir,
         {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail,
-         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_context_noise": noise_spec},
+         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_context_noise": noise_spec,
+         "ja_text_aug": text_spec},
     )
     tt.save_checkpoint = save_checkpoint_with_snapshot
     tt.main(config_path)

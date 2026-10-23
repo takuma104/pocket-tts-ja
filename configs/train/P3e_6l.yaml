@@ -1,0 +1,60 @@
+# P3e: P3h 20k trained on in the text forms of the stock wheel's chunker (docs/plans/
+# irodori_tts_distill_plan.md, 10/23). The wheel packs consecutive sentences into one chunk of up
+# to 50 tokens ("A. B.") and joins the comma pieces of a longer sentence with ", "; the teacher's
+# data have neither (0.09% / 0.00% of the rows), and P3d 20k on the GPU path gives Kana-CER 19.6%
+# on two jsut sentences in one chunk (stops after the first: 1 s pauses in 35%), 18.3% on the
+# wheel's comma pieces (6.7% without the spaces). 30% of the rows become 2-3 rows of their
+# reference speaker with 0.25-0.6 s of silence latent between them, 10% get ", "
+# (pocket_tts_ja.dv_loader.TextAug). Everything else is P3h's, with CFG dropout as before, so
+# the CFG bake (P3d's recipe) follows on it.
+# Run with: uv run python scripts/train/train_student.py configs/train/P3e_6l.yaml
+ja_init_from: runs/irodori_distill/P3h_6l/snapshots/step_00020000.safetensors
+ja_init_full: true
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
+ja_tail_frames: 12
+ja_text_aug: {multi_prob: 0.3, comma_space_prob: 0.1}
+model_config: configs/model/dv_6l_4k.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/P3h_all_train.jsonl  # P3b's + hi1
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 500
+
+run_dir: runs/irodori_distill/P3e_6l
+batch_size: 16
+grad_accum_steps: 4        # effective 64; at 25 Hz batch 16 peaks near 15 GB (P2a)
+max_steps: 20000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 60
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
