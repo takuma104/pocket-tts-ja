@@ -1,0 +1,62 @@
+# S1: a 24-layer FlowLM on the teacher's DACVAE latents (docs/plans/irodori_tts_distill_plan.md,
+# 10/24). The 6L students read well but lose the harmonics of high voices (female_02 / 05 comb
+# 2.5-4k: teacher 10.0 / 11.7 dB, the 6L 5-7 dB on the DACVAE path, 2 dB short even teacher-forced),
+# and neither data (hi1), prompts, temperature, LSD steps nor CFG closed it. Irodori is not
+# autoregressive, so the 6L learns from one sample per frame. S1 is the gate of the staged route
+# (Kyutai's small models: a same-architecture teacher, then cut down and distilled): if a 24L brings
+# female_02 / 05 close to the teacher (snapshots 20k / 40k, LSD 1 / 4 / 8 steps, CFG 1.5), S2
+# distils it into the 6L with CFG baked in; if not, the staged route cannot fix the high voices.
+# The warm start is main's CC 24L that D1-CC (P2's warm start) was distilled from, minus the
+# latent-tied parts, as P2; data and the text and context recipe are P3l's (P3h's data, P3e's text
+# forms, P3c's context noise) from the start; the schedule is P3b's.
+# Run with: uv run python scripts/train/train_student.py configs/train/S1_24l.yaml
+ja_init_from: runs/BCC_4k_peos/weights_580000.safetensors
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
+ja_tail_frames: 12
+ja_text_aug: {multi_prob: 0.3, join_space_prob: 0.5, comma_space_prob: 0.1}
+ja_context_noise: {prob: 0.5, max_std: 0.5}
+model_config: configs/model/dv_24l_4k.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/P3h_all_train.jsonl  # P3b's + hi1
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/irodori_distill/S1_24l
+batch_size: 16
+grad_accum_steps: 4        # effective 64, as the 6L
+max_steps: 60000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 60
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
