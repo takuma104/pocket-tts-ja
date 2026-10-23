@@ -1250,3 +1250,24 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 長い間は変わらない(研究用の経路の jsut_chunk2 は 40% に増えたが、wheel で分けると 20% で P3k と同じ)。
   - 試聴ページ: `exp/listening/wheel_p3m_20k/index.html`(ローカル専用)。列は教師、リリース、P3k(wheel)、P3m(研究用の経路)、P3m(wheel)。文は P3k のページと同じ。短文も追加。
 - **W1s**: galleria2 で 23:10 に開始。same(23:50 終了)、hi は終了間近、残り 2 本で 02:15 ごろに soup。評価は `w1s_eval.sh`。
+
+### 10/24 02:20: 試聴の結果(高い声が残った)→ 段階的な自己蒸留に切り替える。その関門として S1(24L)を開始
+
+- **試聴(ユーザー、10/24 02:00)**
+  - W1 150k: DACVAE と soup4 がどちらも問題なく聞こえる clip では、W1 も DACVAE とほぼ同じ。decoder の蒸留はそこでは成功している。問題は F0 の高い所で、声が裏返る(dev_c1_090 の「手入れ」、dev_c2_090、dev_c3_097 がはっきりした例)。soup4 もノイジーだが、派手な裏返りはない。
+  - P3m 20k: female_02 / 05 以外は、研究用の経路と wheel がほぼ同じ(wheel がわずかに劣る)。female_02 / 05 は研究用の経路(DACVAE の decode)でも崩れが目立つ。P2 60k からはかなり良くなったが、崩れ方の本質は変わらない。
+  - ユーザーの評価: アーキテクチャをまたぐ直接蒸留はできている。ただし主な狙い(女声、特に高 F0)はほぼ進んでいないか、悪くなった方向。
+- **判断: 段階的な自己蒸留に進む(ユーザー了承 10/24 02:10、galleria2 を 1–2 日)**
+  - 通常の fine-tune(実録音など)は後回しにする。教師の出力には高い声の倍音がある(female_02 / 05 の comb 2.5–4k で 10.0 / 11.7 dB)ので、問題は target ではなく、生徒がそれを再現できないこと。データ(hi1)、prompt、温度、LSD の step 数、CFG はどれも差を埋めなかった。teacher-forced でも女声は 2 dB 足りない。
+  - Kyutai の small 系(2026-10-20 の blog「The tiny TTS was actually 10x too big」)は、同じアーキテクチャの教師(24L、300M、8 step の head)から段階的に小さくしている。生徒の backbone は、教師の head への入力(PCA で 64 次元に絞ったもの)を、凍結した教師の head と共に学ぶ。1 step の head は、教師の head から 1 frame あたり 64 サンプルを取る drifting で蒸留する(点ごとの二乗誤差では「平均にぼやける」)。最終サイズから冷えた状態で始めると UTMOS は 3.7 前後にとどまり、段階的に切って再学習すると 4.36。
+  - Irodori は AR ではないので、1 frame ごとの分布を出せない。今の 6L は 1 frame に 1 サンプルから学んでいる。同じアーキテクチャの大きな FlowLM を間に入れると、その分布が手に入る。
+  - 必要な道具は upstream(third-party/pocket-tts 4.0.1)の学習コードにそろっている(`distill_teacher_*`、`head_distill`(mse / drifting)、`training/scripts/shrink_checkpoint.py`、`refl.py`)。公式 wheel 4.0 も `z_dim`、`num_kv_heads`、`decoder_seanet` / `decoder_transformer` を読める。
+  - 6L は d1024 のままなので、24L → 6L の depth distillation は z の幅をそろえる必要がない(head をそのまま共有できる)。
+- **S1**(`configs/train/S1_24l.yaml`、`configs/model/dv_24l_4k.yaml`): 24L d1024 を main の CC 24L(D1-CC の教師、`BCC_4k_peos/weights_580000`)から warm start する(潜在に結びついた部分は P2 と同じく新規)。データと文・文脈のレシピは P3l のもの(P3h のデータ、P3e の文の形、P3c の文脈ノイズ)を最初から使う。スケジュールは P3b のもの(lr 2e-4、cosine、60k step)。
+  - smoke(本機): 1.6–1.7 step/s(6L の約半分)、ピーク 28 GB。60k step で約 10 h。
+  - galleria2 で W1s の後に始まる(`s1_start.sh`)。
+- **関門の判定**(`s1_eval.sh`、20k と 40k の snapshot を自動で取ってくる)
+  - P3l 40k(焼き込み前の 6L)と同じサンプリング(温度 0.7、CFG 1.5、閾値 −4)で比べる。24L は LSD 1 / 4 / 8 step。セットは voices、jvs_bal、jsut(1 step のみ)、teacher-forced。
+  - 見るもの: female_02 / 05 の comb が教師(10.0 / 11.7 dB)に近づくか。それと試聴での二重(試聴ページ `exp/listening/s1_24l_<k>/`)。
+  - 近づけば S2(24L → 6L、CFG の焼き込み、必要なら head の drifting 蒸留)に進む。近づかなければ、段階的な経路でも高い声は直らない。その場合は別の手を考える。
+- **decoder の高 F0**: W1s(案 A)の結果を待つ。hi1 を足した fine-tune を含む。ユーザーの挙げた 3 clip と、オクターブの跳びを数えて比べる。W1 はすでに stock の重みから始めている。残る手は二つ: decoder を大きくする(wheel 4.0 は `decoder_seanet` で別サイズを読める)、生徒の生成した潜在でも学習する(Kyutai の decoder 蒸留)。
