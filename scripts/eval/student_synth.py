@@ -8,6 +8,11 @@ one LSD step, no CFG, EOS at logit > -4 followed by --eos-countdown frames (the 
 12). The latents are decoded with DACVAE and written at 24 kHz (soxr HQ), like the teacher's
 outputs of P0c, so both are scored by the same scripts.
 
+--prompt-encoder FILE (W1, scripts/wheel/train_encoder.py's encoder_step_*.safetensors): the
+prompt goes the wheel's way instead, through that stock-wheel Mimi encoder: 24 kHz, the level
+as recorded, end_on_pause, the encoder's latents as they come (with --delay K the first K
+frames are its silence and the last K of the speech are missing).
+
     uv run python scripts/eval/student_synth.py exp/irodori_distill/eval/jsut \
         runs/irodori_distill/P2_6l/snapshots/step_00020000.safetensors --name P2_20k
     -> <eval dir>/<name>/<key>.wav, <name>_latents/<key>.npy, <name>.jsonl (frames, eos)
@@ -24,10 +29,13 @@ import soundfile as sf
 import soxr
 import torch
 
+from pocket_tts.data.audio_utils import end_on_pause
+from pocket_tts.models.mimi import MimiModel
 from pocket_tts.models.tts_model import TTSModel
-from pocket_tts_ja.dacvae import DACVAE, REF_LOUDNESS_DB, SAMPLE_RATE as DV_SR
+from pocket_tts_ja.dacvae import DACVAE, REF_LOUDNESS_DB, SAMPLE_RATE as DV_SR, load_wav
 from pocket_tts_ja.eval_sets import item_seed
 from pocket_tts_ja.text import normalize
+from pocket_tts_ja.wheel_codec import build_dv_mimi
 from training.args import TrainArgs
 from training.modules.builders import load_model_config
 from training.modules.model import TrainableTTS
@@ -50,6 +58,23 @@ def load_student(config_path: Path, weights: Path, device: torch.device) -> Trai
     return model.to(device).eval()
 
 
+def load_wheel_encoder(weights: Path, device: torch.device) -> MimiModel:
+    """The stock-wheel Mimi with a W1 encoder (`mimi.*` names of train_encoder.py)."""
+    mimi = build_dv_mimi(init_stock=False)
+    state = {k.removeprefix("mimi."): v for k, v in safetensors.torch.load_file(str(weights)).items()}
+    missing = [k for k in state if k not in mimi.state_dict()]
+    assert not missing, f"not in the Mimi: {missing[:5]}"
+    mimi.load_state_dict(state, strict=False)
+    return mimi.to(device).eval()
+
+
+def wheel_prompt(mimi: MimiModel, path: Path, device: torch.device) -> torch.Tensor:
+    """[frames, 32]: the prompt as the wheel encodes it (TTSModel.get_state_for_audio_prompt)."""
+    x = end_on_pause(torch.from_numpy(load_wav(path, OUT_SR))[None], OUT_SR)
+    with torch.no_grad():
+        return mimi.encode_to_latent(x[None].to(device))[0].float()
+
+
 def model_text(text: str) -> str:
     t = normalize(text)
     return t if t.endswith((".", "!", "?", "…")) else t + "."
@@ -69,6 +94,7 @@ def main() -> None:
     parser.add_argument("--eos-countdown", type=int, default=12)
     parser.add_argument("--max-frames", type=int, default=750)
     parser.add_argument("--limit", type=int, default=None, help="only the first N items (smoke tests)")
+    parser.add_argument("--prompt-encoder", type=Path, default=None, help="W1 encoder: prompts the wheel's way")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -76,6 +102,7 @@ def main() -> None:
     model = load_student(args.config, args.weights, device)
     tokenizer = model.flow_lm.conditioner.tokenizer
     codec = DACVAE.load(str(device))
+    wheel_enc = load_wheel_encoder(args.prompt_encoder, device) if args.prompt_encoder else None
     items = [json.loads(line) for line in open(args.eval_dir / "items.jsonl", encoding="utf-8")][: args.limit]
     out = args.eval_dir / args.name
     lat_dir = args.eval_dir / f"{args.name}_latents"
@@ -90,7 +117,9 @@ def main() -> None:
     for b in range(0, len(todo), args.batch_size):
         batch = todo[b : b + args.batch_size]
         for it in batch:
-            if it["prompt"] not in prompts:
+            if it["prompt"] not in prompts and wheel_enc is not None:
+                prompts[it["prompt"]] = wheel_prompt(wheel_enc, Path(it["prompt"]), device)
+            elif it["prompt"] not in prompts:
                 prompts[it["prompt"]] = codec.encode_file(Path(it["prompt"]), loudness_db=REF_LOUDNESS_DB).to(device)
         torch.manual_seed(item_seed(batch[0]["key"]))
         tokens = [torch.tensor(tokenizer.encode(texts[it["key"]]), dtype=torch.long) for it in batch]
