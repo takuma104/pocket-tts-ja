@@ -1002,3 +1002,28 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **encoder(W1e)**: galleria2 で遅延 0 を学習中(15k で held-out の R² 0.901、リリースの声 0.868)。遅延 2 が続き、12:20 ごろに終わる。
   - `student_synth.py --prompt-encoder`: prompt を wheel と同じ経路(24 kHz、録音のままの音量、end_on_pause、W1e の latent)で作る(7f60f8a)。
   - `runs/irodori_distill/w1e_eval.sh`: 両 encoder の 20k で、P3d 20k(temp 0.7、CFG 1.0)の voices と jsut を生成し、DACVAE の prompt の場合と比べる。遅延と、speaker_proj の FT が要るかどうかをこれで決める。
+
+### 10/23 12:20: P3h 20k、P3d 10k、長い間の切り分け、encoder、P3c を開始
+
+- **P3h 20k**(temp 0.7、CFG 1.5。P3b 60k との比較)
+
+| | 教師 | P3b 60k | P3h 20k |
+|---|---:|---:|---:|
+| Kana-CER: voices / jsut / jvs_bal | 1.18 / 1.77 / 2.05% | 5.28 / 6.95 / 7.10% | **3.70 / 5.63 / 5.92%** |
+| 〃 短文 / jsut_trim3 | 3.71% / – | 7.41 / 7.34% | 7.41 / **6.56%** |
+| JKYB-mini | – | 81.4% | **85.2%** |
+| 類似度: voices / jsut / jvs_bal | – | 0.757 / 0.619 / 0.629 | **0.767** / 0.620 / **0.639** |
+| NISQA-TTS: voices / jsut | – | 3.579 / 4.160 | **3.642 / 4.183** |
+| 女声 comb 2.5–4k(voices) | 8.0 | 4.5 | **5.1** |
+| 〃 female_02 / 05 | 10.0 / 11.7 | 4.5 / 5.4 | **5.2 / 6.7** |
+| 1 s 以上の間: voices / jsut / jvs_bal | 0.5 / 0.4 / 1% | **1.0 / 8.7** / 2.0% | 2.0 / 13.5 / 2.0% |
+
+  - hi1 を足して 20k step 続けると、読み(JKYB +3.8pt)、類似度、倍音(female_05 +1.3 dB)がそろって良くなった。jsut の長い間だけが増えた。
+- **P3d 10k**(CFG 1.5 を焼き込み、temp 0.7、CFG 1.0)は、P3h 20k の CFG 1.5 とほぼ同じ。Kana-CER は voices 4.44% / jsut 5.47%、類似度 0.765 / 0.618、女声 comb 5.3(female_02 / 05: 6.0 / 7.2)。1 s 以上の間は voices 4.0% / jsut 17.5%。20k を評価中。
+- **jsut の長い間の切り分け**(P3h 20k)
+  - 声で大きく違う: jvs006 80/263、jvs007 29/252、jvs041 11/258、jvs066 15/227。教師は全部で 4 clip。
+  - jvs006 の prompt(5.08 s)は中に 0.5 / 0.6 s の間を含むが、それを 0.1 s に縮めても減らない(94/263)。末尾の無音を wheel と同じく end_on_pause で切っても(115)、0.5 s に延ばしても(106)、減らない。jvs006 だけを同じ条件で生成し直すと 89、batch 1 で 96。
+  - 教師の学習データの 1 s 以上の間は 0–5%(s4 5.0%、hi1 0.5%、s9 0%。各セット 400 clips を decode して測った)。
+  - → データや prompt の間を写しているのではない。**自由生成で生徒自身が陥る**(温度を下げるほど増える)。P3c(誤差蓄積への対策)の条件に当たる。
+- **P3c**(`configs/train/P3c_6l.yaml`、galleria2 で 12:18 から): P3h と同じ設定で、学習時に半分の行の過去 latent にノイズを足す(行ごとの std は 0–0.5、flow の target はきれいなまま。`pocket_tts_ja.post_eos.ContextNoise`、1323798)。13:30 ごろ終わる見込み。snapshot は本機に取ってきて、P3h と同じ評価にかける(`p3c_fetch.sh`)。
+- **encoder(W1e)の 20k**: 遅延 0 は held-out の R² 0.902 / リリースの声 0.871。**遅延 2 は 0.957 / 0.921**。DACVAE の encoder が非因果なので、2 フレームの先読みが効く。生徒での比較は P3d 20k の評価のあと(`w1e_eval.sh`)。
