@@ -1214,3 +1214,20 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 
   - jsut の読みが 0.5 pt 良くなった(cosine の学習率がまだ半分の時点)。長い間はやや増えた。40k は学習終了(21:50 ごろ)後に評価する(`p3l_fetch.sh`。jvs_bal、短文、JKYB-mini も)。
 - **P3m**(`configs/train/P3m_6l.yaml`): P3l 40k に CFG 1.5 を焼き込む(P3k の方法のまま、教師だけ替える)。galleria2 で P3l の学習が終わり次第始まる(`p3m_start.sh`)。P3l 40k が 20k より悪ければ止める。評価は閾値 −1 で、研究用の経路と公式 wheel の両方を P3k と並べる(`p3m_fetch.sh`。`cfg_sweep.sh` / `jkyb_eval.sh` に `EOS=-1` と比較用の `CMP` を足した)。
+
+### 10/23 22:30: P3l 40k は 20k よりさらに良い(JKYB-mini 90.5%)→ P3m(その焼き込み)を続ける。案 A(W1s)を準備
+
+- **P3l 40k**(P3i 20k + 40k step、温度 0.7、CFG 1.5、閾値 −4)
+
+| | P3i 20k | P3l 20k | **P3l 40k** |
+|---|---:|---:|---:|
+| Kana-CER: voices / jsut | 2.73 / 4.05% | 2.75 / 3.55% | **2.26 / 3.28%** |
+| Kana-CER: jvs_bal / 短文 | 4.93 / 5.84% | | **3.76 / 4.57%** |
+| Kana-CER: 2 文、抜け / 読点の断片 | 7.85%、12 / 5.89% | 6.15%、10 / 5.41% | **5.93%、7 / 5.21%** |
+| JKYB-mini | 87.5% | | **90.5%**(リリース 95.1%) |
+| 1 s 以上の間: 2 文 / jsut / voices / 読点の断片 | **12.7 / 9.2 / 2.5** / 13.8% | 15.3 / 13.9 / 3.5 / 13.8% | 14.0 / 12.2 / 4.5 / 19.5% |
+
+  - 読みはすべてのセットで最良。長い間は P3i より少し多い。
+- **案 A(W1s、ユーザー了承 10/23 22:20)**: W1 の decoder の NISQA の損(P3k の wheel で jvs_bal −0.30、jsut −0.18、主に女声)を、main の soup4 と同じ方法で減らす。
+  - W1 150k(`W1_main_d2/checkpoint.pt`: decoder、EMA、識別器)から 10k step の fine-tune を 4 本(`train_decoder.py --init`、lr は本番の半分、cosine)。レシピ: 同じデータ(seed 1)/ hi1 の高い声 21.6k clips を足す(`w1_targets_hi1`)/ 識別器に 1.5 s(本番 1 s。2 s は batch 16 でメモリ不足)/ mel の重みを半分。それを平均する(`scripts/wheel/soup_decoders.py`)。
+  - galleria2 で P3m の後に順に回す(`w1s_start.sh`、約 3.5 h)。評価は P3m 20k の同じ潜在をそれぞれの decoder で decode して並べ(voices、jvs_bal、jsut)、soup で package して公式 wheel も通す(`w1s_eval.sh`)。
