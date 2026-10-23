@@ -1369,3 +1369,32 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - 容量は NISQA-TTS を +0.03〜0.11 上げる(anime の往復が一番大きい)。Kana-CER と類似度は変わらない。comb、F0、有声の割合は W1s_hi と同じ。
 - 10k step だけの比較なので、長く回せばもう少し伸びる余地はある。ただし、高い声の倍音は容量の問題ではない。DACVAE との差(voices で NISQA −0.08、comb −1.7 dB)の大部分は残る。
 - 次は W1g(GTA)。W1r の深さは、W1g の結果と合わせて最後に決める(wheel の計算量は約 +20%)。
+
+### 10/24 08:20: W1g(生徒のフレームでの GTA fine-tune)は小さいが確かに効く。wheel の decoder が、女声の NISQA の損失の全部になっている
+
+- **W1g**: W1s_same と同じ 10k step で、clip の半分の入力を P3m 20k の teacher-forced の潜在にしたもの(`w1g_start.sh`。括弧内は W1s_same)
+
+| | NISQA-TTS(女声) | comb 2.5–4k: 女声 / female_02 / 05 | Kana-CER | 類似度 |
+|---|---:|---:|---:|---:|
+| P3m 20k の decode、voices | 3.625 / 3.855(3.582 / 3.778) | 3.5 / 4.9 / 5.7(3.3 / 4.5 / 5.5) | 2.06%(2.11%) | 0.736(0.745) |
+| P3m 20k の decode、jvs_bal | 4.035(4.011) | 5.5(5.2) | 4.27%(4.45%) | 0.633(0.636) |
+| 往復 anime | 3.506(3.365) | 5.3(5.1) | – | – |
+| 往復 y3hi | 4.072(4.050) | 6.5(6.3) | – | – |
+
+  - 生徒の潜在でも、きれいな潜在(往復)でも、NISQA は上がる。往復の F0 は少し悪い(p90 +1 cent)。類似度は −0.003〜−0.009。
+  - 大きさは W1s_hi、W1r と同じくらい(それぞれ +0.02〜0.1)。
+- **損失の内訳(voices の女声)**
+
+| | NISQA-TTS | comb 2.5–4k |
+|---|---:|---:|
+| 教師(DACVAE) | 3.939 | 8.0 |
+| P3m 20k(DACVAE) | 3.976 | 5.5 |
+| P3m 20k(W1 150k、wheel) | 3.776 | 3.3 |
+| P3m 20k(W1r / W1g、wheel) | 3.865 / 3.855 | 3.8 / 3.5 |
+
+  - DACVAE で decode すれば、P3m の女声の NISQA は教師並み。wheel の decoder が −0.2 を失う。comb は、生徒と decoder がそれぞれ約 2 dB 失う。
+  - 往復 anime では、公式 Mimi(自分の encoder と decoder)は comb 8.6 dB、有声 96.7%。W1 は 5.1 dB、89.0%。同じ構造でも、decoder にはまだ伸びる余地がある。
+- **次: W1x**。3 つの改善を合わせる(`w1x_start.sh`)。
+  - W1r_k3(3 ブロック、w1_targets + hi1)から、さらに 20k step。
+  - 入力の約半分を GTA にする(w1_gta と w1_gta_hi1。hi1 の 15,749 clip も P3m 20k で teacher-forced に引いた)。
+  - S1 40k の温度の確認の後に回す。S1 60k の評価は W1x の後に移した。
