@@ -1182,3 +1182,35 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 焼き込みは P3i 20k の CFG 1.5 より良い所もある(voices 2.73 → 2.44%、jvs_bal 4.93 → 4.23%)。閾値 −1 で 2 文は 3.68%(抜け 0)、jsut 3.83%。
   - package `exp/irodori_distill/package/p3k_20k`(閾値 −1、空白を削除)で公式 wheel を通す(`p3k_wheel.sh`)。
 - **P3l**(`configs/train/P3l_6l.yaml`、galleria2 で 19:22 に開始): P3i 20k から同じ recipe で 40k step。P3i の 10k → 20k でも Kana-CER が下がり続けていたため(voices 3.17 → 2.73%、jsut 4.24 → 4.05%)。評価は `p3l_fetch.sh`。
+
+### 10/23 21:20: P3k を公式 wheel で(閾値 −1)。2 文の抜けは 1/150 に。P3l 20k は P3i 20k より読みが良い → P3l 40k に焼き込む P3m を準備
+
+- **P3k 20k を公式 wheel で**(package `exp/irodori_distill/package/p3k_20k`: W1 150k、W1e delay 2、閾値 −1、空白を削除。CPU、温度 0.7)。括弧内は同じ生徒を研究用の経路(GPU、DACVAE でデコード、閾値 −1)で生成したもの:
+
+| | リリース(wheel) | P3j 20k(wheel、閾値 −4 / 0) | **P3k 20k(wheel、−1)** |
+|---|---:|---:|---:|
+| Kana-CER: voices | **1.28%** | 2.75 / 2.79% | 2.59%(2.44%) |
+| Kana-CER: 2 文(pair_probe)、抜け | **1.47%、0** | 9.63%、20 / 3.91%、0 | 3.82%、1(部分的)(3.68%、0) |
+| Kana-CER: wheel が 2 つに分ける jsut 85 文(jsut_chunk2) | **2.68%** | 4.86 / 4.74% | 4.04%(5.26%) |
+| Kana-CER: jvs_bal / 短文 / jsut | **2.01 / 4.18 / 2.05%** | 4.81 / 5.36 / 4.03%(−4) | 4.67 / 5.91 / 3.63%(4.21 / 5.68 / 3.83%) |
+| 類似度: voices / jvs_bal / jsut | 0.689 / **0.650** / 0.606 | 0.738 / – / – | **0.744** / 0.637 / **0.622** |
+| NISQA-TTS: voices / jvs_bal / jsut | **3.699 / 4.201 / 4.127** | 3.610 / – / – | 3.664 / 3.919 / 4.018 |
+| 1 s 以上の間: 2 文 / jsut_chunk2 / jsut | **0.7 / 0.0 / 0.1%** | – / 21 → 12% / – | 10.7 / 20.0 / 7.9% |
+
+  - 読み(Kana-CER)はすべてのセットで P3j の wheel より良い。リリースとの差は voices 1.3 pt、jsut 1.6 pt まで縮んだ。類似度は voices と jsut でリリースより高い。
+  - wheel が長い文を読点で 2 つに分けると、P3k はかえって良くなる(jsut_chunk2 5.26 → 4.04%、jsut 3.83 → 3.63%)。閾値 −1 の読点の断片の損は、文全体では見えない。
+  - NISQA-TTS は W1 の decoder の分だけ下がる(研究用の経路との差: jvs_bal −0.30、jsut −0.18、2 文 −0.18、voices −0.02。女声で大きい)。P3d / P3j と同じ傾向で、リリースとの差の大半はここ(jvs_bal −0.28、jsut −0.11)。
+  - 長い間は研究用の経路と同じ程度に残る(jsut_chunk2 20%、jsut 7.9%)。リリースにはほとんどない。
+  - 試聴ページ: `exp/listening/wheel_p3k_20k/index.html`(ローカル専用、JVS を含む)。voices、2 文、jsut_chunk2、jvs_bal、jsut。列は教師、リリース、P3k(研究用の経路)、P3k(wheel)。
+- **P3l 20k**(P3i 20k からさらに 20k step、つまり 40k。温度 0.7、CFG 1.5、閾値 −4)
+
+| | P3i 20k | **P3l 20k** |
+|---|---:|---:|
+| Kana-CER: 2 文、抜け / 読点の断片(chunk_sp) | 7.85%、12 / 5.89% | **6.15%、10 / 5.41%** |
+| Kana-CER: voices / jsut | **2.73** / 4.05% | 2.75 / **3.55%** |
+| 類似度: voices / jsut | 0.772 / 0.626 | 0.773 / 0.625 |
+| NISQA-TTS: voices / jsut | 3.676 / 4.191 | 3.682 / 4.194 |
+| 1 s 以上の間: 2 文 / jsut / voices | **12.7 / 9.2 / 2.5%** | 15.3 / 13.9 / 3.5% |
+
+  - jsut の読みが 0.5 pt 良くなった(cosine の学習率がまだ半分の時点)。長い間はやや増えた。40k は学習終了(21:50 ごろ)後に評価する(`p3l_fetch.sh`。jvs_bal、短文、JKYB-mini も)。
+- **P3m**(`configs/train/P3m_6l.yaml`): P3l 40k に CFG 1.5 を焼き込む(P3k の方法のまま、教師だけ替える)。galleria2 で P3l の学習が終わり次第始まる(`p3m_start.sh`)。P3l 40k が 20k より悪ければ止める。評価は閾値 −1 で、研究用の経路と公式 wheel の両方を P3k と並べる(`p3m_fetch.sh`。`cfg_sweep.sh` / `jkyb_eval.sh` に `EOS=-1` と比較用の `CMP` を足した)。
