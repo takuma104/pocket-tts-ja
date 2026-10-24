@@ -1626,3 +1626,12 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 読みと間は、1 step と 8 step の間。間は 1 step(S2)より増える(voices 10.5%、8 step と同じ傾向)。
   - 試聴ページ: `exp/listening/hs_s2_20k/`(ローカルのみ。JVS を含む。列は教師、P3m 20k、S2 20k の 1 step、8 step、HS)。
 - **次**: S2 60k にも同じことを 20k step で行う(`configs/train/HS_s2_60k.yaml`。`hs_start.sh` が S2 60k の snapshot を待って自動で始める)。cpu の費用は 1 step のまま(head の大きさは変わらない)。
+
+### 10/24 17:45: 残るのは female_02 / 05 の裏返り・二重だけ(ユーザー)。noise の切り詰め(noise_clamp)の確認
+
+- **ユーザー(10/24 17:40、hs_s2_20k)**: HS の 1 step は 8 step とほぼ同じ。S2 20k の 8 step を超える感じはない。教師との距離は **female_02 / 05 に限った話で、高い声の裏返りや二重の感じ**。ほかの声(主に HS を聴いた)はほぼ問題ない。間は少しだけ気になるものがある(例: jvs055 の「遺灰」)。
+  - jvs055「遺灰」の間(`pauses.py` の区切り、35 dB): 教師 0.36 / 0.50 / 0.12 / 0.40 …、HS 0.40 / 0.84 / 0.74 / 0.10 / 0.62 s。1 s は超えないが、読点の間が教師より 0.3〜0.6 s 長い。jvs_bal 全体でも間の合計は教師の 1.5 倍(1.49 / 1.00 s)。release(main 系、Mimi 12.5 Hz)は 0.88 s で、1 s 以上の間は 0%。
+- **S2 40k の評価の遅れ**: `s2_fetch.sh` は W1x のときの「`train_decoder.py` が動いている間は待つ」条件を持っていて、W1w の学習中ずっと止まっていた。17:22 に条件を外した `s2_fetch2.sh`(40k と 60k)に置き換えた(出力は同じ `s2_fetch.out` に追記)。
+- **noise の切り詰め**(`clamp_probe.sh`。`student_synth.py --noise-clamp`: 公式 wheel の `noise_clamp` と同じ truncated normal。読み込み時の引数で、既定は無し)
+  - 裏返りが、noise の裾から引いたまれな frame から来るなら、温度をあまり下げずに切り詰めで消せる。
+  - HS_s2_20k(1 step、温度 0.7)で、±2.5 / 2.0 / 1.5(3.0 / 2.4 / 1.8 σ。noise の std は 0.84 → 0.83 / 0.80 / 0.70)。対照に、切り詰めなしの温度 0.5(std 0.71)。voices と jvs_bal。batch 8(1.2 GB)で W1w の横で回す。
