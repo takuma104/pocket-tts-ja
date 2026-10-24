@@ -1600,3 +1600,10 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 1 step の写像を 8 step の写像そのものに合わせるので、データへの回帰と違って平均化が起きない。head は S2 20k のもの(S1 60k の head)から始める。lr 1e-4、10k step。
   - GPU 1.7 GB、7.7 it/s(H の probe の横で回る)。最初の head_loss(1 step と 8 step の差の二乗平均、正規化した潜在)は 0.010、500 step で 0.006。
   - 評価: voices、jvs_bal、jsut で 1 step。S2 20k の 1 / 8 step と比べる。効けば、S2 60k でも同じことをする(H1 の大きさの head と組み合わせる案もある)。
+- **H1 の jvs_bal / jsut**: jvs_bal の女声の comb 6.6 dB(P3l 40k の 1 / 4 step は 6.3 / 6.7)、女声の NISQA-TTS と読みは変わらない(jsut 3.30%、P3l 3.28%)。head を 3.8 倍にしても効果は小さい。
+  - H0 / H2 は止めた(15:40)。HS と decoder の幅(W1w)に GPU を回す。HS が効かなければ再開する(H0 は step 264 の checkpoint から)。
+- **W1w を開始**(15:50、本機、`runs/irodori_distill/w1w_start.sh`)
+  - `wheel_codec.widen_decoder`(net2wider): 広げたチャネルは元のチャネルのコピー。読む側の重みをコピーの数で割るので、noise なしなら出力は同じ(相対 RMS 差 4.5e-7)。
+  - Adam はコピーどうしに同じ更新を与え続けるので、追加したチャネルへの重みに、その層の重みの std の 0.02 倍の noise を足す。W1x との出力の差は 0.6%。
+  - W1x(64 × 3)→ 96 × 3(decoder 8.3M params)。学習の開始時の mel は 0.204(W1x の開始時 0.208)。
+  - HS と GPU を分け合って 1.9 step/s、24.7 GB。20k step は 19:00 ごろ。
