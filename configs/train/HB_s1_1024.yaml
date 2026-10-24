@@ -1,0 +1,59 @@
+# HB_s1_1024 (plan 10/24): a fresh flow head of 1024 x 6 (configs/model/dv_24l_4k_h1024.yaml, 37.3M params)
+# on S1 60k's 24L backbone, frozen (ja_head_only). The user hears the cracks and the doubled voice of
+# female_02 / 05 fewer at 8 LSD steps than at 1 (S1, S2), the rest of the voices fine: the head's
+# sampling. On P3l's 6L, the 1024-wide head (H1) gave +0.2-0.5 dB of the comb over the stock head at
+# the same steps. Trained on S1's own z (with its text / voice dropout, as S1's head was), so it
+# plugs into S2 (which matches S1's guided z) like S1's head; then HS (8 -> 1 step) for the wheel.
+# Data and the rest are S1's; lr for a fresh head (H1's).
+# Run with: uv run python scripts/train/train_student.py configs/train/HB_s1_1024.yaml
+ja_init_from: runs/irodori_distill/S1_24l/snapshots/step_00060000.safetensors
+ja_head_only: true
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
+ja_tail_frames: 12
+ja_text_aug: {multi_prob: 0.3, join_space_prob: 0.5, comma_space_prob: 0.1}
+ja_context_noise: {prob: 0.5, max_std: 0.5}
+model_config: configs/model/dv_24l_4k_h1024.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/P3h_all_train.jsonl  # P3b's + hi1
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 4e-4                 # a fresh head (H1's)
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 1000
+
+run_dir: runs/irodori_distill/HB_s1_1024
+batch_size: 16
+grad_accum_steps: 4        # effective 64, as the 6L
+max_steps: 20000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 60
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
