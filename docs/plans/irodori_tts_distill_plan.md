@@ -1579,3 +1579,24 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **次**
   - S2 40k(16:25 ごろ)と 60k(18:30 ごろ)を、1 / 4 / 8 step で自動で評価する。
   - H1(head 1024 × 6)の結果(15:25 ごろ)。大きい head が 1 step で 8 step と同じ効果を出せるかを見る。出せれば、wheel の既定(1 step)のまま使える。
+
+### 10/24 15:35: 1 step と 8 step の聴き比べ(ユーザー)、H1 の voices、head の step 蒸留(HS)を開始
+
+- **ユーザー(10/24 15:20)**: female_02 / 05 では、S1_60k_t07s8_cfg1.5 のほうが S1_60k_t07_cfg1.5(1 step)より明らかに裏返りが少なく、良い。ほかの声はほぼ差がわからない。最終的には 1 step にしたいが、現時点では 8 step でもよい。
+  - 生徒の高い声の裏返りの一部は、head の 1 step のサンプリングから来ている。
+- **H1(head 1024 × 6、P3l 40k の backbone、20k step)の voices**(温度 0.7、CFG 1.5、閾値 −4)
+
+| | comb 2.5–4k: 女声 / female_02 / 05 | NISQA-TTS 女声 | Kana-CER | 1 s 以上の間 |
+|---|---:|---:|---:|---:|
+| P3l 40k、1 step | 5.5 / 6.6 / 7.7 | 3.950 | 2.26% | 4.5% |
+| P3l 40k、4 step | 6.0 / 7.1 / 8.7 | 4.005 | 2.20% | 3.5% |
+| H1、1 step | 5.9 / 6.8 / 8.6 | 3.969 | 2.09% | 3.0% |
+| H1、4 step | 6.2 / 7.6 / 9.1 | 4.027 | 2.15% | 4.0% |
+
+  - 大きい head の 1 step は、元の head の 4 step にほぼ並ぶ(comb)。NISQA はその半分も届かない。間は増えない。
+  - jvs_bal / jsut と H0(対照)は続きで出る。
+- **HS: head の step 蒸留**(`train_student.py` の `ja_head_steps`、`configs/train/HS_s2_20k.yaml`、`runs/irodori_distill/hs_start.sh`)
+  - upstream の head distillation を使う。凍結した head のコピーを 8 step で回し、同じ noise(温度 0.7)から 1 step で同じ出力を出すよう、head だけを学習する。backbone(S2 20k)は固定。
+  - 1 step の写像を 8 step の写像そのものに合わせるので、データへの回帰と違って平均化が起きない。head は S2 20k のもの(S1 60k の head)から始める。lr 1e-4、10k step。
+  - GPU 1.7 GB、7.7 it/s(H の probe の横で回る)。最初の head_loss(1 step と 8 step の差の二乗平均、正規化した潜在)は 0.010、500 step で 0.006。
+  - 評価: voices、jvs_bal、jsut で 1 step。S2 20k の 1 / 8 step と比べる。効けば、S2 60k でも同じことをする(H1 の大きさの head と組み合わせる案もある)。
