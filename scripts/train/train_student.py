@@ -17,7 +17,9 @@ Like main's scripts/train_ja.py, swaps names inside `training.train` before runn
     With distill_teacher_config another (deeper) model of this latent space (S2, main's D1 recipe),
     the teacher is that model with distill_teacher_weights and the student starts from its bottom
     and top layers (upstream's shrink_checkpoint.shrink; same d_model, so every other tensor, the
-    heads too, is the teacher's); the CFG target is the teacher's, the rest as above.
+    heads too, is the teacher's); the CFG target is the teacher's, the rest as above. With
+    ja_init_from too (S2h), the student continues from an earlier depth student instead: all but
+    flow_net and out_eos loads from ja_init_from, the frozen heads stay the new teacher's.
   - write_samples -> decodes with DACVAE (48 kHz)
   - ProgressLog -> also mirrors scalars to wandb (pocket_tts_ja.wandb_log)
 and wraps save_checkpoint to keep an EMA snapshot (flow_lm weights only, safetensors) of every
@@ -123,7 +125,7 @@ def make_build_models(
         distill = args.distill_cfg_coef > 0
         depth = distill and args.distill_teacher_config != args.model_config
         if distill:
-            assert args.distill_teacher_config and not init_from, "the student starts from its teacher"
+            assert args.distill_teacher_config and (depth or not init_from), "the student starts from its teacher"
         assert args.stats_ema_steps == 0, "the latent statistics are fixed (ja_latent_stats)"
         config = load_model_config(args.model_config, args.model_overrides)
         tts_model = TTSModel._from_pydantic_config(
@@ -147,6 +149,13 @@ def make_build_models(
             flow_lm.load_state_dict(state, strict=True)
             logger.info(f"depth distillation (CFG {args.distill_cfg_coef}) of {args.distill_teacher_weights}, "
                         f"student from its layers {kept}")
+            if init_from:
+                heads = ("flow_net.", "out_eos.")
+                prev = {k: v for k, v in _load_flow_lm_state(init_from, args.init_from_use_ema).items()
+                        if not k.startswith(heads)}
+                missing, unexpected = flow_lm.load_state_dict(prev, strict=False)
+                assert not unexpected and all(k.startswith(heads) for k in missing), (missing, unexpected)
+                logger.info(f"student continued from {init_from} (all but its heads)")
         elif distill:
             state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
             flow_lm.load_state_dict(state, strict=True)
