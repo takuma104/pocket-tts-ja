@@ -16,11 +16,17 @@ frames are its silence and the last K of the speech are missing).
     uv run python scripts/eval/student_synth.py exp/irodori_distill/eval/jsut \
         runs/irodori_distill/P2_6l/snapshots/step_00020000.safetensors --name P2_20k
     -> <eval dir>/<name>/<key>.wav, <name>_latents/<key>.npy, <name>.jsonl (frames, eos)
+
+--noise-rho R (a probe, not the wheel's sampling): the flow head's noise of each frame is
+R x the previous frame's + sqrt(1 - R^2) x a fresh draw, so every frame's noise is still
+N(0, temp) but it moves slowly over the utterance instead of jumping at every frame.
 """
 
 import argparse
 import json
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +86,27 @@ def model_text(text: str) -> str:
     return t if t.endswith((".", "!", "?", "…")) else t + "."
 
 
+@contextmanager
+def correlated_noise(rho: float, ldim: int) -> Iterator[None]:
+    """AR(1) frame noise for one generate() call: it draws torch.randn(B, ldim) once per frame."""
+    randn: Callable[..., torch.Tensor] = torch.randn
+    prev: list[torch.Tensor] = []
+
+    def ar1(*size: int, **kwargs: object) -> torch.Tensor:
+        x = randn(*size, **kwargs)
+        if len(size) == 2 and size[1] == ldim:
+            if prev and prev[0].shape == x.shape:
+                x = rho * prev[0] + (1 - rho**2) ** 0.5 * x
+            prev[:] = [x]
+        return x
+
+    torch.randn = ar1
+    try:
+        yield
+    finally:
+        torch.randn = randn
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("eval_dir", type=Path)
@@ -89,6 +116,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--temp", type=float, default=0.3)
     parser.add_argument("--steps", type=int, default=1, help="LSD decode steps of the flow head per frame")
+    parser.add_argument("--noise-rho", type=float, default=0.0, help="AR(1) correlation of the frame noise (probe)")
     parser.add_argument("--cfg", type=float, default=1.0)
     parser.add_argument("--eos-threshold", type=float, default=-4.0)
     parser.add_argument("--eos-countdown", type=int, default=12)
@@ -123,7 +151,7 @@ def main() -> None:
                 prompts[it["prompt"]] = codec.encode_file(Path(it["prompt"]), loudness_db=REF_LOUDNESS_DB).to(device)
         torch.manual_seed(item_seed(batch[0]["key"]))
         tokens = [torch.tensor(tokenizer.encode(texts[it["key"]]), dtype=torch.long) for it in batch]
-        with torch.no_grad():
+        with torch.no_grad(), correlated_noise(args.noise_rho, model.ldim):
             lats = model.generate(
                 tokens, [prompts[it["prompt"]] for it in batch], max_frames=args.max_frames, temp=args.temp, n_steps=args.steps,
                 cfg_coef=args.cfg, eos_threshold=args.eos_threshold, eos_countdown=args.eos_countdown,
