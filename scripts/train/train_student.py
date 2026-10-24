@@ -36,6 +36,8 @@ them (run_dir/upstream_config.yaml):
     fields)
   ja_text_aug: P3e, the stock wheel's chunk forms in training: several sentences in one row,
     ", " after commas (pocket_tts_ja.dv_loader.TextAug fields; the validation rows stay single)
+  ja_head_only: H, a new flow head on a trained backbone: ja_init_from gives everything but
+    flow_net (strict), flow_net starts fresh at model_config's flow size, and only it trains
 
     uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 """
@@ -105,7 +107,9 @@ def build_teacher(args: TrainArgs, latent_dim: int) -> nn.Module:
     return flow_lm.eval()
 
 
-def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
+def make_build_models(
+    init_from: str, stats: Path, init_full: bool = False, head_only: bool = False
+) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
     def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, Config]:
         assert not args.start_from_pretrained and not args.head_distill
         distill = args.distill_cfg_coef > 0
@@ -139,6 +143,14 @@ def make_build_models(init_from: str, stats: Path, init_full: bool = False) -> C
             state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
             flow_lm.load_state_dict(state, strict=True)
             logger.info(f"CFG distillation ({args.distill_cfg_coef}) of {args.distill_teacher_weights}")
+        elif init_from and head_only:
+            state = _load_flow_lm_state(init_from, args.init_from_use_ema)
+            missing, unexpected = flow_lm.load_state_dict({k: v for k, v in state.items() if not k.startswith("flow_net.")}, strict=False)
+            assert not unexpected and missing and all(k.startswith("flow_net.") for k in missing), (missing, unexpected)
+            for name, p in flow_lm.named_parameters():
+                p.requires_grad_(name.startswith("flow_net."))
+            n = sum(p.numel() for p in flow_lm.flow_net.parameters())
+            logger.info(f"backbone of {init_from} (frozen), a fresh flow head of {n / 1e6:.1f}M params")
         elif init_from and init_full:
             flow_lm.load_state_dict(_load_flow_lm_state(init_from, args.init_from_use_ema), strict=True)
             logger.info(f"continued from {init_from} (all of it)")
@@ -250,6 +262,8 @@ def main(config_path: str) -> None:
     aug_spec = ja.pop("ja_prompt_aug", None)
     aug = PromptAug(**aug_spec) if isinstance(aug_spec, dict) else None
     init_full = bool(ja.pop("ja_init_full", False))
+    head_only = bool(ja.pop("ja_head_only", False))
+    assert not (head_only and init_full), "ja_head_only loads ja_init_from but its flow head"
     noise_spec = ja.pop("ja_context_noise", None)
     TrainableTTS.ja_context_noise = ContextNoise(**noise_spec) if isinstance(noise_spec, dict) else None  # type: ignore[attr-defined]
     text_spec = ja.pop("ja_text_aug", None)
@@ -259,12 +273,12 @@ def main(config_path: str) -> None:
     tt.DataLoader = partial(DvLatentDataLoader, tail_frames=tail)
     tt.encode_batch = encode_batch_latents
     TrainableTTS.forward = forward_with_post_eos  # type: ignore[method-assign]
-    tt.build_models = make_build_models(init_from, stats, init_full)
+    tt.build_models = make_build_models(init_from, stats, init_full, head_only)
     tt.write_samples = write_samples_dacvae
     tt.ProgressLog = make_progress_log_cls(
         args.run_dir,
         {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail,
-         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_context_noise": noise_spec,
+         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_head_only": head_only, "ja_context_noise": noise_spec,
          "ja_text_aug": text_spec},
     )
     tt.save_checkpoint = save_checkpoint_with_snapshot
