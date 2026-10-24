@@ -17,6 +17,9 @@ frames are its silence and the last K of the speech are missing).
         runs/irodori_distill/P2_6l/snapshots/step_00020000.safetensors --name P2_20k
     -> <eval dir>/<name>/<key>.wav, <name>_latents/<key>.npy, <name>.jsonl (frames, eos)
 
+--noise-clamp C: the frame noise drawn from a normal truncated to [-C, C] (after the temperature), as
+the stock wheel's noise_clamp (TTSModel.load_model / --noise-clamp; off by default).
+
 Probes of the frame noise (not the wheel's sampling):
 --noise-rho R: the flow head's noise of each frame is R x the previous frame's + sqrt(1 - R^2) x
   a fresh draw, so every frame's noise is still N(0, temp) but it moves slowly over the utterance
@@ -91,8 +94,11 @@ def model_text(text: str) -> str:
 
 
 @contextmanager
-def frame_noise(ldim: int, rho: float = 0.0, transform: torch.Tensor | None = None) -> Iterator[None]:
-    """The frame noise of one generate() call (it draws torch.randn(B, ldim) once per frame):
+def frame_noise(
+    ldim: int, rho: float = 0.0, transform: torch.Tensor | None = None, bound: float | None = None
+) -> Iterator[None]:
+    """The frame noise of one generate() call (it draws torch.randn(B, ldim) once per frame, then
+    scales it by sqrt(temp)): truncated to [-bound, bound] (redrawn outside, as trunc_normal_),
     AR(1)-correlated over the frames, then times a fixed [ldim, ldim] matrix."""
     randn: Callable[..., torch.Tensor] = torch.randn
     prev: list[torch.Tensor] = []
@@ -101,6 +107,8 @@ def frame_noise(ldim: int, rho: float = 0.0, transform: torch.Tensor | None = No
         x = randn(*size, **kwargs)
         if len(size) != 2 or size[1] != ldim:
             return x
+        while bound is not None and (out := x.abs() > bound).any():
+            x[out] = randn(int(out.sum()), device=x.device, dtype=x.dtype)
         if prev and prev[0].shape == x.shape:
             x = rho * prev[0] + (1 - rho**2) ** 0.5 * x
         prev[:] = [x]
@@ -131,6 +139,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--temp", type=float, default=0.3)
     parser.add_argument("--steps", type=int, default=1, help="LSD decode steps of the flow head per frame")
+    parser.add_argument("--noise-clamp", type=float, default=None, help="the wheel's noise_clamp (truncated noise)")
     parser.add_argument("--noise-rho", type=float, default=0.0, help="AR(1) correlation of the frame noise (probe)")
     parser.add_argument("--noise-pca", type=Path, default=None, help="latent_pca.py output (probe)")
     parser.add_argument("--pca-temps", default=None, help='temperature per principal axis, "0.7x8,0.2x24" (probe)')
@@ -146,6 +155,7 @@ def main() -> None:
     device = torch.device(args.device)
     model = load_student(args.config, args.weights, device)
     transform = pca_transform(args.noise_pca, args.pca_temps, args.temp) if args.pca_temps else None
+    bound = args.noise_clamp / args.temp**0.5 if args.noise_clamp else None  # in units of the unscaled draw
     tokenizer = model.flow_lm.conditioner.tokenizer
     codec = DACVAE.load(str(device))
     wheel_enc = load_wheel_encoder(args.prompt_encoder, device) if args.prompt_encoder else None
@@ -169,7 +179,7 @@ def main() -> None:
                 prompts[it["prompt"]] = codec.encode_file(Path(it["prompt"]), loudness_db=REF_LOUDNESS_DB).to(device)
         torch.manual_seed(item_seed(batch[0]["key"]))
         tokens = [torch.tensor(tokenizer.encode(texts[it["key"]]), dtype=torch.long) for it in batch]
-        with torch.no_grad(), frame_noise(model.ldim, args.noise_rho, transform):
+        with torch.no_grad(), frame_noise(model.ldim, args.noise_rho, transform, bound):
             lats = model.generate(
                 tokens, [prompts[it["prompt"]] for it in batch], max_frames=args.max_frames, temp=args.temp, n_steps=args.steps,
                 cfg_coef=args.cfg, eos_threshold=args.eos_threshold, eos_countdown=args.eos_countdown,
