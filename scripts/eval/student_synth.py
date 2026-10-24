@@ -17,9 +17,13 @@ frames are its silence and the last K of the speech are missing).
         runs/irodori_distill/P2_6l/snapshots/step_00020000.safetensors --name P2_20k
     -> <eval dir>/<name>/<key>.wav, <name>_latents/<key>.npy, <name>.jsonl (frames, eos)
 
---noise-rho R (a probe, not the wheel's sampling): the flow head's noise of each frame is
-R x the previous frame's + sqrt(1 - R^2) x a fresh draw, so every frame's noise is still
-N(0, temp) but it moves slowly over the utterance instead of jumping at every frame.
+Probes of the frame noise (not the wheel's sampling):
+--noise-rho R: the flow head's noise of each frame is R x the previous frame's + sqrt(1 - R^2) x
+  a fresh draw, so every frame's noise is still N(0, temp) but it moves slowly over the utterance
+  instead of jumping at every frame.
+--pca-temps T1xN1,T2xN2,... with --noise-pca FILE (scripts/eval/latent_pca.py): a temperature per
+  principal axis of the normalised latent frames, largest first (the noise along axis i is scaled
+  by sqrt(T_i / --temp)).
 """
 
 import argparse
@@ -87,24 +91,35 @@ def model_text(text: str) -> str:
 
 
 @contextmanager
-def correlated_noise(rho: float, ldim: int) -> Iterator[None]:
-    """AR(1) frame noise for one generate() call: it draws torch.randn(B, ldim) once per frame."""
+def frame_noise(ldim: int, rho: float = 0.0, transform: torch.Tensor | None = None) -> Iterator[None]:
+    """The frame noise of one generate() call (it draws torch.randn(B, ldim) once per frame):
+    AR(1)-correlated over the frames, then times a fixed [ldim, ldim] matrix."""
     randn: Callable[..., torch.Tensor] = torch.randn
     prev: list[torch.Tensor] = []
 
-    def ar1(*size: int, **kwargs: object) -> torch.Tensor:
+    def draw(*size: int, **kwargs: object) -> torch.Tensor:
         x = randn(*size, **kwargs)
-        if len(size) == 2 and size[1] == ldim:
-            if prev and prev[0].shape == x.shape:
-                x = rho * prev[0] + (1 - rho**2) ** 0.5 * x
-            prev[:] = [x]
-        return x
+        if len(size) != 2 or size[1] != ldim:
+            return x
+        if prev and prev[0].shape == x.shape:
+            x = rho * prev[0] + (1 - rho**2) ** 0.5 * x
+        prev[:] = [x]
+        return x if transform is None else x @ transform.to(x.device, x.dtype)
 
-    torch.randn = ar1
+    torch.randn = draw
     try:
         yield
     finally:
         torch.randn = randn
+
+
+def pca_transform(path: Path, temps: str, temp: float) -> torch.Tensor:
+    """U diag(sqrt(T_i / temp)) U^T for the axes U of latent_pca.py, T from "0.7x8,0.2x24"."""
+    axes = torch.from_numpy(np.load(path)["axes"]).float()  # [ldim, ldim], columns largest first
+    per_axis = [float(t) for part in temps.split(",") for t, n in [part.split("x")] for _ in range(int(n))]
+    assert len(per_axis) == axes.shape[1], f"{len(per_axis)} temperatures for {axes.shape[1]} axes"
+    scale = (torch.tensor(per_axis) / temp).sqrt()
+    return axes @ torch.diag(scale) @ axes.T
 
 
 def main() -> None:
@@ -117,6 +132,8 @@ def main() -> None:
     parser.add_argument("--temp", type=float, default=0.3)
     parser.add_argument("--steps", type=int, default=1, help="LSD decode steps of the flow head per frame")
     parser.add_argument("--noise-rho", type=float, default=0.0, help="AR(1) correlation of the frame noise (probe)")
+    parser.add_argument("--noise-pca", type=Path, default=None, help="latent_pca.py output (probe)")
+    parser.add_argument("--pca-temps", default=None, help='temperature per principal axis, "0.7x8,0.2x24" (probe)')
     parser.add_argument("--cfg", type=float, default=1.0)
     parser.add_argument("--eos-threshold", type=float, default=-4.0)
     parser.add_argument("--eos-countdown", type=int, default=12)
@@ -128,6 +145,7 @@ def main() -> None:
 
     device = torch.device(args.device)
     model = load_student(args.config, args.weights, device)
+    transform = pca_transform(args.noise_pca, args.pca_temps, args.temp) if args.pca_temps else None
     tokenizer = model.flow_lm.conditioner.tokenizer
     codec = DACVAE.load(str(device))
     wheel_enc = load_wheel_encoder(args.prompt_encoder, device) if args.prompt_encoder else None
@@ -151,7 +169,7 @@ def main() -> None:
                 prompts[it["prompt"]] = codec.encode_file(Path(it["prompt"]), loudness_db=REF_LOUDNESS_DB).to(device)
         torch.manual_seed(item_seed(batch[0]["key"]))
         tokens = [torch.tensor(tokenizer.encode(texts[it["key"]]), dtype=torch.long) for it in batch]
-        with torch.no_grad(), correlated_noise(args.noise_rho, model.ldim):
+        with torch.no_grad(), frame_noise(model.ldim, args.noise_rho, transform):
             lats = model.generate(
                 tokens, [prompts[it["prompt"]] for it in batch], max_frames=args.max_frames, temp=args.temp, n_steps=args.steps,
                 cfg_coef=args.cfg, eos_threshold=args.eos_threshold, eos_countdown=args.eos_countdown,
