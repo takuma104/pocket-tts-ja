@@ -1864,3 +1864,14 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - データは S1h_all から hi2 の 0.7 s 以上の間を持つ 2,492 clip を除いたもの(`S1h_short_train.jsonl`、学習 347,244 行、うち hi2 27,184 行)。
   - そのほかは S2h と同じ(S2 60k から 20k step、lr 2e-4)。続けて HS_s2h5。
   - 評価は `s2h5_fetch.sh`(GPU 版、wheel 版、声ごとの長い間)。試聴ページ `exp/listening/s2h5_wheel/`(教師 / リリース / 今の候補 / S2h / S2h5。どれも wheel 版)。09:30 ごろ。
+
+### 10/25 06:40: デコーダの倍音は損失を足しても戻らない(ELU の SEANet の構造の限界)
+
+- **W1hf**(`runs/irodori_distill/w1hf.sh`): W1w2 から 5k step を追加学習した。2–8 kHz の線形 STFT(n_fft 2048 / 1024)の対数振幅 L1 を足した(`train_decoder.py --w-hf 5`、`codec_losses.HighBandSTFTLoss`。mel の 15 × 0.19 に対して 5 × 0.33)。
+  - 検証の 4–6 kHz comb(教師の潜在、女声。DACVAE 5.48 dB): W1w2 1.43 → W1hf 1.57 dB。
+  - 足した損失そのものも 0.331 → 0.325 とほとんど下がらない。mel、F0 のずれ、有声の割合は同じ。
+  - log-mel(2048 点は 320 mel で、5 kHz で約 50 Hz 幅)はすでに高い声の倍音を分けられる。MPD / MS-STFT / MB-STFT の判別器もある。そのうえで、倍音の鋭さを直接の目標にしても動かない。幅(W1w)、深さ(W1s)、損失のどれでも変わらないので、**ELU の SEANet(公式 wheel の固定の活性化)の構造の限界**とみる。
+  - 公式 wheel 4.0.1 の SEANet で設定から変えられるのは n_filters、n_residual_layers、ratios、各カーネル、dilation_base、compress だけで、活性化は ELU に固定。
+- **判断**
+  - W1(公式 wheel のまま)では、倍音は今の水準(4–6 kHz で 1.5〜2 dB)が上限。生徒の潜在の改善は、2.5–4 kHz の帯までしか wheel の出力に届かない。
+  - 残る手は W2(pocket-tts に Snake 型などのデコーダを足す PR)。外部に出すので、ユーザーに相談する。

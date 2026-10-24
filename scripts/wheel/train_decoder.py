@@ -72,6 +72,7 @@ import torchaudio.functional as AF
 
 from pocket_tts_ja.codec_losses import (
     Discriminators,
+    HighBandSTFTLoss,
     MultiScaleMelLoss,
     decode_window,
     discriminator_loss,
@@ -218,6 +219,8 @@ def main() -> None:
     parser.add_argument("--w-mel", type=float, default=15.0)
     parser.add_argument("--w-adv", type=float, default=1.0)
     parser.add_argument("--w-fm", type=float, default=10.0)
+    parser.add_argument("--w-hf", type=float, default=0.0, help="log-magnitude L1 of the linear STFT inside --hf-band")
+    parser.add_argument("--hf-band", type=float, nargs=2, default=[2000.0, 8000.0])
     parser.add_argument("--band-ffts", type=int, nargs="*", default=[2048, 1024, 512])
     parser.add_argument("--ema", type=float, default=0.999)
     parser.add_argument("--log-every", type=int, default=100)
@@ -276,6 +279,7 @@ def main() -> None:
     disc = Discriminators(band_ffts=tuple(args.band_ffts)).to(device)
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0)
     mel = MultiScaleMelLoss(SR).to(device)
+    hf = HighBandSTFTLoss(SR, band=(args.hf_band[0], args.hf_band[1])).to(device)
     ema = EMA(named, args.ema)
     step = 0
     if ckpt.exists():
@@ -342,6 +346,10 @@ def main() -> None:
         loss_mel = mel(fake, real)
         loss = args.w_mel * loss_mel
         logs["mel"] = float(loss_mel)
+        if args.w_hf > 0:
+            loss_hf = hf(fake, real)
+            loss = loss + args.w_hf * loss_hf
+            logs["hf"] = float(loss_hf)
         if gan:
             d_real, d_fake = disc(real_g), disc(fake_g)
             loss_adv = generator_loss(d_fake)

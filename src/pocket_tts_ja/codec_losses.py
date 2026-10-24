@@ -59,6 +59,33 @@ class MultiScaleMelLoss(nn.Module):
         return total / len(self.specs)
 
 
+class HighBandSTFTLoss(nn.Module):
+    """L1 between log-magnitude linear spectrograms inside a band, mean over STFT sizes.
+
+    The log-mel loss is coarse above a few kHz, where the ELU decoders blur the harmonics of high
+    voices (the 4-6 kHz comb of W1 stays near 1.5 dB against DACVAE's 5.5 dB): the linear bins of a
+    long window resolve them.
+    """
+
+    def __init__(
+        self, sample_rate: int, band: tuple[float, float] = (2000.0, 8000.0), n_ffts: tuple[int, ...] = (2048, 1024)
+    ) -> None:
+        super().__init__()
+        self.n_ffts = n_ffts
+        self.bins = [(round(band[0] * n / sample_rate), round(band[1] * n / sample_rate) + 1) for n in n_ffts]
+        for n in n_ffts:
+            self.register_buffer(f"window_{n}", torch.hann_window(n), persistent=False)
+
+    def forward(self, fake: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        total = fake.new_zeros(())
+        for n, (lo, hi) in zip(self.n_ffts, self.bins, strict=True):
+            window = getattr(self, f"window_{n}")
+            specs = [torch.stft(x.reshape(-1, x.shape[-1]), n, n // 4, window=window, return_complex=True)[:, lo:hi].abs()
+                     for x in (fake, real)]
+            total = total + F.l1_loss(specs[0].clamp_min(1e-5).log10(), specs[1].clamp_min(1e-5).log10())
+        return total / len(self.n_ffts)
+
+
 class PeriodDiscriminator(nn.Module):
     def __init__(self, period: int, channels: tuple[int, ...] = (32, 128, 256, 512, 512)) -> None:
         super().__init__()
