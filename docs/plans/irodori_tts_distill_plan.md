@@ -1635,3 +1635,35 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **noise の切り詰め**(`clamp_probe.sh`。`student_synth.py --noise-clamp`: 公式 wheel の `noise_clamp` と同じ truncated normal。読み込み時の引数で、既定は無し)
   - 裏返りが、noise の裾から引いたまれな frame から来るなら、温度をあまり下げずに切り詰めで消せる。
   - HS_s2_20k(1 step、温度 0.7)で、±2.5 / 2.0 / 1.5(3.0 / 2.4 / 1.8 σ。noise の std は 0.84 → 0.83 / 0.80 / 0.70)。対照に、切り詰めなしの温度 0.5(std 0.71)。voices と jvs_bal。batch 8(1.2 GB)で W1w の横で回す。
+
+### 10/24 18:20: noise の切り詰めは効かない、裂け目の指標は作れなかった、S2 40k、W1w の前半、HB を予約
+
+- **noise の切り詰め**(`clamp_probe.sh`、HS_s2_20k、1 step、温度 0.7)
+
+| | comb 2.5–4k: voices 女声 / female_02 / 05 | NISQA-TTS 女声: voices / jvs_bal | 1 s 以上の間: voices / jvs_bal | Kana-CER jvs_bal |
+|---|---:|---:|---:|---:|
+| HS(切り詰めなし) | 6.5 / 7.3 / 8.9 | 4.072 / 4.363 | 10.5 / 7.0% | 3.40% |
+| ±2.5 | 6.7 / 7.3 / 9.4 | 4.078 / 4.414 | 13.0 / 6.0% | 3.46% |
+| ±2.0 | 6.7 / 7.7 / 8.9 | 4.077 / 4.397 | 11.0 / 10.0% | 3.46% |
+| ±1.5 | 7.1 / 7.6 / 9.5 | 4.059 / 4.386 | 16.5 / 21.0% | 4.10% |
+| 温度 0.5(対照) | 7.0 / 7.7 / 9.4 | 4.070 / 4.367 | 16.5 / … | 3.82% |
+
+  - ±2.5 / 2.0 の差はほぼ誤差の範囲。±1.5 は温度 0.5 と同じ(倍音は上がり、間と読みが悪くなる)。裾の noise を切ることに特別な効果はない。裏返りは、noise の裾から来るのではない。
+- **裏返りの指標**(`scripts/eval/f0_breaks.py`: 10 ms ごとの F0 の 5 半音を超える跳び、clip の中央値から 7 半音を超える frame、frame 周期(15–35 Hz)の F0 の揺れ)
+  - どれも、生徒を教師から分けない。教師の方が跳びも揺れも大きい(女声の揺れ: 教師 88.6 cent、録音 64.6、S1 8 step 68.6)。教師(全体を一度に生成する DiT)の自然な表現と、tracker の誤りが勝つ。
+  - female_02 の跳びだけは、S1 の 1 step 2.60% → 8 step 1.99% と、聴感と同じ向き。ただし教師が 2.28% で、指標には使えない。裏返りは試聴で判断する。
+- **S2 40k**(17:41 に評価。1 / 4 / 8 step)
+  - 読み: jvs_bal 2.31%(20k 3.58%、S1 2.03%)、jsut 2.20%(20k 2.90%)、voices 1.86 / 1.75 / 1.69%(S1 8 step 1.53%)。
+  - 1 s 以上の間: voices 3.5 / 4.5 / 4.0%(20k は 8.0〜12.5%)。
+  - comb(8 step): voices 女声 7.0、female_02 8.4、female_05 9.8 dB。S1 の 8 step(6.3 / 7.5 / 9.0)を超える。
+  - 女声の NISQA-TTS: voices 4.010 / 4.049 / 4.067、jsut 4.260 / 4.279 / 4.283。
+  - 17:44 に GPU が足りず、voices の 4 / 8 step の ASR が落ちた(W1w、S2 の評価、切り詰めの確認が重なった)。手で回し直した。
+  - 試聴ページ: `exp/listening/s2_40k/`(教師、S1 60k の 8 step、S2 20k の 8 step、S2 40k の 1 step / 8 step)。
+- **W1w**(18:01 に学習終了。HS の学習が終わってから速くなった)。P3m 20k の潜在の decode:
+  - 女声の NISQA-TTS: voices 3.993(W1x 3.955、DACVAE 3.976)、jvs_bal 4.220(W1x 4.201)。W1x との差は +0.038 ± 0.012 / +0.019。
+  - comb は W1x と同じ(voices 女声 4.5 / 4.3、female_02 6.0 / 5.9)。
+  - Anime / y3hi の往復は評価中。
+- **HB を予約**(galleria2、`runs/irodori_distill/hb_start.sh` が S2 の学習の終わりを待って始める。`configs/train/HB_s1_1024.yaml`)
+  - S1 60k の 24L(固定)に、幅 1024 × 6 の flow head を新しく学習する(37.3M params、20k step)。S1 の head と同じく S1 自身の z(text / voice の dropout つき)で学習するので、S1 の guided z に合わせた S2 にもそのまま差せる。
+  - 本機の `hb_fetch.sh` が snapshot を取ってきて、S1 60k の head と同じサンプリング(温度 0.7、CFG 1.5、1 / 8 step)で比べ、試聴ページ `exp/listening/hb_s1_1024/` を作る。
+  - 効けば、S2 60k の head を HB に差し替えて、HS(8 → 1 step、新しい head も 1024 幅)を回す。wheel の CPU 費用は、1 step で FlowLM が約 +33%(8 step の元の head は生成全体で +78%)。
