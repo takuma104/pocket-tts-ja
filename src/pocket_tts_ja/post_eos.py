@@ -46,7 +46,6 @@ def forward_with_post_eos(
     update_stats: bool = False,
     num_voice_prompt_frames: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    assert self.head_teacher is None, "head distillation is not supported here"
     if mask.dtype == torch.bool:
         speech = flow_mask = mask
     else:
@@ -63,6 +62,10 @@ def forward_with_post_eos(
         std = noise_spec.max_std * torch.rand(latents.shape[0], 1, 1, device=latents.device) * rows
         past = normalized_latents + std.to(latents.dtype) * torch.randn_like(normalized_latents)
     inputs = (past, text_tokens, voice_latents, num_voice_prompt_frames)
+    if self.head_teacher is not None:  # head distillation (upstream's), on every frame the head decodes
+        with torch.no_grad():
+            z = self.backbone_z(fl, *inputs, cfg_dropout=False)
+        return self._head_distill(z[flow_mask])
     z = self.backbone_z(fl, *inputs, cfg_dropout=self.training)
 
     if self.distill_teacher is not None:

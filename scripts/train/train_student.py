@@ -38,6 +38,10 @@ them (run_dir/upstream_config.yaml):
     ", " after commas (pocket_tts_ja.dv_loader.TextAug fields; the validation rows stay single)
   ja_head_only: H, a new flow head on a trained backbone: ja_init_from gives everything but
     flow_net (strict), flow_net starts fresh at model_config's flow size, and only it trains
+  ja_head_steps: HS, N > 1: the flow head learns in one step what ja_init_from's head makes in N
+    LSD steps from the same noise (upstream's head distillation, its frozen head run at N steps;
+    noise at head_distill_temp), on the frozen backbone's outputs. The head starts as
+    ja_init_from's (all of it loads, strict), or fresh at model_config's size with ja_head_only
 
     uv run python scripts/train/train_student.py configs/train/P2_6l.yaml
 """
@@ -64,7 +68,9 @@ import torch
 import yaml
 from torch import nn
 
+import training.modules.model as upstream_model
 import training.train as tt
+from pocket_tts.models.flow_lm import lsd_decode
 from pocket_tts.models.mimi import MimiModel
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.utils.config import Config
@@ -81,7 +87,7 @@ from pocket_tts_ja.post_eos import ContextNoise, forward_with_post_eos
 from pocket_tts_ja.wandb_log import make_progress_log_cls
 from pocket_tts_ja.wheel_codec import build_dv_mimi
 from training.args import TrainArgs, dump_args, load_args
-from training.modules.builders import _load_flow_lm_state, load_model_config
+from training.modules.builders import _load_flow_lm_state, head_from_state, load_model_config
 from training.modules.model import TrainableTTS
 from training.modules.samplers import build_flow
 from training.modules.utils import disable_grad, dit_init, gaussian_init, stamp_state_names
@@ -108,10 +114,12 @@ def build_teacher(args: TrainArgs, latent_dim: int) -> nn.Module:
 
 
 def make_build_models(
-    init_from: str, stats: Path, init_full: bool = False, head_only: bool = False
+    init_from: str, stats: Path, init_full: bool = False, head_only: bool = False, head_steps: int = 1
 ) -> Callable[[TrainArgs], tuple[TrainableTTS, MimiModel, Config]]:
     def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, Config]:
         assert not args.start_from_pretrained and not args.head_distill
+        assert head_steps == 1 or init_from, "ja_head_steps distils ja_init_from's head"
+        head_state: dict[str, torch.Tensor] = {}
         distill = args.distill_cfg_coef > 0
         depth = distill and args.distill_teacher_config != args.model_config
         if distill:
@@ -143,14 +151,17 @@ def make_build_models(
             state = _load_flow_lm_state(args.distill_teacher_weights, args.distill_teacher_use_ema)
             flow_lm.load_state_dict(state, strict=True)
             logger.info(f"CFG distillation ({args.distill_cfg_coef}) of {args.distill_teacher_weights}")
-        elif init_from and head_only:
+        elif init_from and (head_only or head_steps > 1):
             state = _load_flow_lm_state(init_from, args.init_from_use_ema)
-            missing, unexpected = flow_lm.load_state_dict({k: v for k, v in state.items() if not k.startswith("flow_net.")}, strict=False)
-            assert not unexpected and missing and all(k.startswith("flow_net.") for k in missing), (missing, unexpected)
+            head_state = {k.removeprefix("flow_net."): v for k, v in state.items() if k.startswith("flow_net.")}
+            kept = {k: v for k, v in state.items() if not (head_only and k.startswith("flow_net."))}
+            missing, unexpected = flow_lm.load_state_dict(kept, strict=False)
+            assert not unexpected and all(k.startswith("flow_net.") for k in missing), (missing, unexpected)
+            assert bool(missing) == head_only, missing
             for name, p in flow_lm.named_parameters():
                 p.requires_grad_(name.startswith("flow_net."))
             n = sum(p.numel() for p in flow_lm.flow_net.parameters())
-            logger.info(f"backbone of {init_from} (frozen), a fresh flow head of {n / 1e6:.1f}M params")
+            logger.info(f"backbone of {init_from} (frozen), {'a fresh' if head_only else 'its'} flow head of {n / 1e6:.1f}M params")
         elif init_from and init_full:
             flow_lm.load_state_dict(_load_flow_lm_state(init_from, args.init_from_use_ema), strict=True)
             logger.info(f"continued from {init_from} (all of it)")
@@ -172,6 +183,13 @@ def make_build_models(
         for p in mimi.parameters():
             p.requires_grad_(False)
         model = TrainableTTS(flow_lm, flow, args)
+        if head_steps > 1:
+            teacher_head = head_from_state(head_state).eval()
+            disable_grad(teacher_head)
+            model.__dict__["head_teacher"] = teacher_head  # outside the module tree, as upstream
+            disable_grad(flow)  # the MSE to the frozen head's samples leaves LSD's own weights unused
+            logger.info(f"head distillation: one step <- {head_steps} steps of the frozen head (noise at "
+                        f"temperature {args.head_distill_temp})")
         if distill:
             if not depth:
                 teacher = copy.deepcopy(flow_lm).eval()
@@ -264,6 +282,9 @@ def main(config_path: str) -> None:
     init_full = bool(ja.pop("ja_init_full", False))
     head_only = bool(ja.pop("ja_head_only", False))
     assert not (head_only and init_full), "ja_head_only loads ja_init_from but its flow head"
+    head_steps = int(ja.pop("ja_head_steps", 1))  # type: ignore[call-overload]
+    if head_steps > 1:  # the frozen head's samples (upstream's _head_distill decodes with one step)
+        upstream_model.lsd_decode = partial(lsd_decode, num_steps=head_steps)
     noise_spec = ja.pop("ja_context_noise", None)
     TrainableTTS.ja_context_noise = ContextNoise(**noise_spec) if isinstance(noise_spec, dict) else None  # type: ignore[attr-defined]
     text_spec = ja.pop("ja_text_aug", None)
@@ -273,12 +294,12 @@ def main(config_path: str) -> None:
     tt.DataLoader = partial(DvLatentDataLoader, tail_frames=tail)
     tt.encode_batch = encode_batch_latents
     TrainableTTS.forward = forward_with_post_eos  # type: ignore[method-assign]
-    tt.build_models = make_build_models(init_from, stats, init_full, head_only)
+    tt.build_models = make_build_models(init_from, stats, init_full, head_only, head_steps)
     tt.write_samples = write_samples_dacvae
     tt.ProgressLog = make_progress_log_cls(
         args.run_dir,
         {**yaml.safe_load(dump_args(args)), "ja_init_from": init_from, "ja_latent_stats": str(stats), "ja_tail_frames": tail,
-         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_head_only": head_only, "ja_context_noise": noise_spec,
+         "ja_prompt_aug": aug_spec, "ja_init_full": init_full, "ja_head_only": head_only, "ja_head_steps": head_steps, "ja_context_noise": noise_spec,
          "ja_text_aug": text_spec},
     )
     tt.save_checkpoint = save_checkpoint_with_snapshot
