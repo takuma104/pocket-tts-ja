@@ -1537,3 +1537,45 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - H1: dim 1024 × depth 6(37.3M params、P3l の head の 3.8 倍)。H0: 512 × 6 を最初から(対照: 20k step の新しい head が P3l の head に届くか)。H2: 512 × 12。
   - どれも P3l 40k の backbone(CFG を焼く前)に、P3l のデータで 20k step(lr 4e-4、本機で約 85 分ずつ)。評価は P3l 40k と同じ(温度 0.7、CFG 1.5、閾値 −4、1 / 4 step)。
   - CPU の費用: head は frame ごとに 1 回動く。dim 1024 で 1 frame の計算は約 +50%、depth 12 で約 +13%。
+
+### 10/24 15:05: S1 の試聴(8 step で female_03 / 05 が大きく良くなる)、S2 20k、LSD の step 数と decoder の大きさの CPU 費用
+
+- **ユーザー(10/24 14:40)**
+  - s1_24l_60k: S1_60k_t07s8_cfg1.5 は female_03 / 05 で大きく良くなった(あと少し)。ほかの声は教師とほぼ区別がつかない。イントネーションも問題ない。方向性はよい。
+  - w1x_recon: dev_c1_090 / dev_c2_090 / dev_c3_097 の裏返りは、ほんのわずか良くなったかも、という程度。深さで難しいなら、次は幅か、との問い。
+- **comb は聴感と合わない**: female_03 の comb 2.5–4k は、S1 の 1 / 4 / 8 step で 4.6 / 4.9 / 4.6 dB(教師 6.3、P3l 40k 4.7、P3m 20k 4.2)。female_05 だけが 8.0 / 8.7 / 9.0 と step で上がる。comb は、聞こえている改善の一部しか測っていない。
+- **S2 20k**(S1 60k → 6L、CFG 1.0、閾値 −1、温度 0.7、研究用の経路。4 / 8 step は `s2_steps.sh`)
+
+| | Kana-CER: voices / jsut / jvs_bal | NISQA-TTS 女声: voices / jsut / jvs_bal | comb 2.5–4k: voices 女声 / female_02 / 03 / 05 / jvs_bal 女声 | 1 s 以上の間: voices / jsut / jvs_bal |
+|---|---:|---:|---:|---:|
+| 教師 | 1.18 / 1.77 / 2.05% | 3.939 / 4.486 / 4.604 | 8.0 / 10.0 / 6.3 / 11.7 / 7.6 | 0.5 / 0.4 / 1.0% |
+| P3m 20k | 2.20 / 3.29 / 4.12% | 3.976 / 4.175 / 4.375 | 5.5 / 6.5 / 4.2 / 8.1 / 6.4 | 4.5 / 12.9 / 4.0% |
+| S1 60k、8 step(CFG 1.5、閾値 −4) | 1.53 / – / 2.03% | 4.103 / – / 4.399 | 6.3 / 7.5 / 4.6 / 9.0 / 6.9 | 8.5 / – / 3.0% |
+| S2 20k、1 step | 2.06 / 2.90 / 3.58% | 4.021 / 4.261 / 4.331 | 6.1 / 6.6 / 4.8 / 8.1 / 7.1 | 8.0 / 14.2 / 4.0% |
+| S2 20k、4 step | 1.89 / … / … | 4.080 / … / … | 6.6 / 7.7 / 5.0 / 8.8 / … | 12.5 / … / … |
+| S2 20k、8 step | 1.71 / … / … | 4.078 / … / … | 6.6 / 6.9 / 4.7 / 9.4 / … | 12.0 / … / … |
+
+  - 20k(60k のうち)で、読みと倍音は P3m 20k より少し良い(jsut 2.90%、jvs_bal 3.58%、jvs_bal の女声の comb +0.7 dB)。
+  - S2 は S1 の flow head をそのまま使うので、step 数の効果も引き継ぐ。8 step で読み 1.71%、female_05 の comb 9.4 dB(S1 の 8 step は 9.0)。
+  - 長い間は増える(voices 1 step 8.0%、8 step 12.0%。P3m 4.5%、教師 0.5%)。S1 と同じ傾向。
+  - W1x を通すと(`s2_w1x.sh`)、女声の NISQA-TTS は voices 3.950 / jvs_bal 4.198 で、P3m 20k の W1x(3.955 / 4.201)と同じ。comb は 4.8 dB(P3m 4.3)。DACVAE との差(voices −0.07、4–6 kHz の comb 3.3 → 1.3 dB)は、W1x の GTA が P3m の frame だったことにもよる。最終の生徒で GTA を引き直して fine-tune する予定(変わらず)。
+- **公式 wheel での step 数**: `TTSModel.load_model(sampler_decode_steps=N)` / CLI `--sampler-decode-steps N`。読み込み時の引数で、既定は 1。yaml には書けない。
+- **CPU の費用**(`scripts/wheel/cpu_cost.py`。公式 wheel 4.0.1、galleria2 の空いたコア 2 つ、1 process 2 threads。P3m 20k + W1x の package、voices の 20 文、計 100 s の音声)
+
+| | 音声 1 s あたりの計算時間 |
+|---|---:|
+| 生成(FlowLM と decoder)、1 / 4 / 8 step | 0.460 / 0.637 / 0.819 s |
+| decoder のみ、n_filters × block 数: 64 × 1(stock の大きさ)/ 64 × 3(W1x) | 0.148 / 0.197 s |
+| 〃 96 × 1 / 96 × 3 | 0.190 / 0.264 s |
+| 〃 128 × 1 / 128 × 3 | 0.266 / 0.361 s |
+
+  - 8 step は生成全体で +78%。それでも 2 threads で実時間の 1.2 倍の速さ。
+  - decoder を 96 × 3 にすると、decoder は +34%(音声 1 s あたり +0.07 s)。128 × 3 は +83%。
+  - なお、wheel 4.0.1 の Kyutai の小型版(`english_2m_2026-10.yaml`)は、decoder を逆に細くしている(n_filters 24、decoder transformer d128 × 4)。
+- **decoder の幅**: 深さ(1 → 3 block)は NISQA を +0.03〜0.11 上げたが、F0、有声の残り、comb は変えなかった。幅も同じ結果になるおそれはある。ただ、費用は大きくない(96 × 3 で +0.07 s/s)ので試す。
+  - W1w: W1x を関数を変えずに幅 96 に広げる(net2wider。チャネルを複製し、出側の重みを不均等に分けて、複製どうしが別れて学習できるようにする)。そこから 20k step、データと GTA は W1x と同じ。
+  - 比べるもの: Anime / y3hi の往復(有声の残り、F0 の p90、comb、NISQA)、ユーザーの挙げた 3 clip、生徒の潜在の decode(4–6 kHz の comb)。
+  - GPU は、本機の H の probe(〜18:15)か galleria2 の S2(〜18:30)の後。
+- **次**
+  - S2 40k(16:25 ごろ)と 60k(18:30 ごろ)を、1 / 4 / 8 step で自動で評価する。
+  - H1(head 1024 × 6)の結果(15:25 ごろ)。大きい head が 1 step で 8 step と同じ効果を出せるかを見る。出せれば、wheel の既定(1 step)のまま使える。
