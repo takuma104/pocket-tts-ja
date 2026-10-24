@@ -4,8 +4,10 @@ jvs031's "一方で、漁業と商業で、…" lasts 8 s against the teacher's 
 Per clip, 20 ms frames are silent when their energy is more than --floor-db below the clip's 95th
 percentile frame; the speech runs from the first to the last loud frame, and a pause is a run of
 silent frames of --min-ms or more inside it. Per result: the mean speech duration and its ratio
-to the first result's on the same items, the mean total and longest pause per clip, and the share
-of clips with a pause of 1 s or more.
+to the first result's on the same items, the mean total and longest pause per clip, the share
+of clips with a pause of 1 s or more, and the pauses' count per clip, median and 90th percentile
+(10/25: the students pause where the teacher does, about as often, but each pause runs ~25% longer;
+JSUT median 0.42 s for the teacher, 0.52 for S1 60k and S2 60k at temperature 0.7).
 
     uv run python scripts/eval/pauses.py exp/irodori_distill/eval/jvs_bal teacher release P2_60k P2_60k_cfg1.5
 """
@@ -61,13 +63,16 @@ def main() -> None:
     stats = {n: [pauses(args.eval_dir / n / f"{k}.wav", args.floor_db, args.min_ms // FRAME_MS) for k in keys] for n in args.names}
     ref = np.array([d for d, _ in stats[args.names[0]]])
     print(f"{len(keys)} clips in every directory; pauses of {args.min_ms} ms or more inside the speech")
-    print("| result | speech s | ratio | pause total s | longest s | clips with >= 1 s |\n|---|---:|---:|---:|---:|---:|")
+    print("| result | speech s | ratio | pause total s | longest s | clips with >= 1 s | pauses / clip | median s | p90 s |\n"
+          "|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     for n in args.names:
         dur = np.array([d for d, _ in stats[n]])
         total = np.array([sum(p) for _, p in stats[n]])
         longest = np.array([max(p, default=0.0) for _, p in stats[n]])
+        every = np.array([x for _, p in stats[n] for x in p] or [0.0])
         print(f"| {n} | {dur.mean():.2f} | {np.mean(dur / np.maximum(ref, 1e-3)):.2f} | {total.mean():.2f} | {longest.mean():.2f}"
-              f" | {np.mean(longest >= 1.0):.1%} |")
+              f" | {np.mean(longest >= 1.0):.1%} | {np.mean([len(p) for _, p in stats[n]]):.2f} | {np.median(every):.2f}"
+              f" | {np.percentile(every, 90):.2f} |")
     if args.per_speaker:  # S2h (10/25): female_04's long pauses alone grew 1 -> 13 of 20
         print("clips with a pause of 1 s or more, per speaker")
         print("| speaker | " + " | ".join(args.names) + " |\n|---|" + "---:|" * len(args.names))

@@ -13,6 +13,10 @@ trained decoder is deepened with ``deepen_decoder``: every new block ends in a z
 the deeper decoder starts out computing exactly what the shallower one did. It can also be wider
 (``decoder_filters``, the SEANet's n_filters; the stock wheel reads it from the same section): a
 trained decoder is widened with ``widen_decoder`` (net2wider).
+
+Not for the stock wheel (plan W2): ``snake=True`` gives every ELU of the SEANet decoder Snake's
+periodic term (``SnakeELU``), the activation of DACVAE's own decoder. The term starts at zero, so a
+trained ELU decoder fitted with it starts out unchanged.
 """
 
 import re
@@ -21,8 +25,12 @@ from pathlib import Path
 
 import safetensors.torch
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from pocket_tts.models.mimi import MimiModel, build_mimi
+from pocket_tts.modules.conv import StreamingConv1d
+from pocket_tts.modules.seanet import SEANetResnetBlock
 from pocket_tts.utils.config import MimiConfig
 from pocket_tts.utils.utils import download_if_necessary
 from pocket_tts_ja.mimi_utils import load_pocket_config
@@ -173,9 +181,63 @@ def deepen_decoder(state: dict[str, torch.Tensor], fresh: dict[str, torch.Tensor
     return out
 
 
+class _SnakeELUFn(torch.autograd.Function):
+    """elu(x) + beta sin^2(alpha x) / alpha keeping only x for the backward (the plain expression keeps
+    four activation-sized tensors per layer: W1w2 + Snake ran out of 32 GB at batch 16)."""
+
+    @staticmethod
+    def forward(ctx: torch.autograd.function.FunctionCtx, x: torch.Tensor, alpha: torch.Tensor,
+                beta: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(x, alpha, beta)
+        return F.elu(x) + beta * torch.sin(alpha * x).pow(2) / (alpha + 1e-9)
+
+    @staticmethod
+    def backward(ctx: torch.autograd.function.FunctionCtx, g: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        x, alpha, beta = ctx.saved_tensors  # type: ignore[attr-defined]
+        a = alpha + 1e-9
+        sin2 = torch.sin(2 * alpha * x)
+        sq = torch.sin(alpha * x).pow(2)
+        gx = g * (torch.where(x > 0, 1.0, torch.exp(x)) + beta * sin2 * alpha / a)
+        g_alpha = (g * beta * (x * sin2 / a - sq / a**2)).sum(dim=(0, 2), keepdim=True)
+        g_beta = (g * sq / a).sum(dim=(0, 2), keepdim=True)
+        return gx, g_alpha, g_beta
+
+
+class SnakeELU(nn.Module):
+    """ELU plus Snake's periodic term (BigVGAN, DAC), per channel: elu(x) + beta sin^2(alpha x) / alpha.
+    beta starts at zero: an ELU decoder fitted with these starts out computing what it did."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1, channels, 1))
+        self.beta = nn.Parameter(torch.zeros(1, channels, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _SnakeELUFn.apply(x, self.alpha, self.beta)  # type: ignore[no-any-return]
+
+
+def is_snake(name: str) -> bool:
+    return name.endswith((".alpha", ".beta"))
+
+
+def snake_decoder(mimi: MimiModel) -> None:
+    """Swaps every ELU of the SEANet decoder for a SnakeELU as wide as the conv after it."""
+
+    def swap(layers: nn.ModuleList) -> None:
+        for i, layer in enumerate(layers):
+            if isinstance(layer, nn.ELU):
+                after = layers[i + 1]
+                conv = after.conv if isinstance(after, StreamingConv1d) else after.convtr
+                layers[i] = SnakeELU(conv.in_channels)
+            elif isinstance(layer, SEANetResnetBlock):
+                swap(layer.block)
+
+    swap(mimi.decoder.model)
+
+
 def build_dv_mimi(
     frame_rate: float = 25.0, latent_dim: int = 32, init_stock: bool = True, decoder_res_layers: int = 1,
-    decoder_filters: int | None = None,
+    decoder_filters: int | None = None, snake: bool = False,
 ) -> MimiModel:
     """The decode side for DACVAE latents; decoder transformer and SEANet from the stock Mimi."""
     mimi = build_mimi(dv_mimi_config(frame_rate, latent_dim, decoder_res_layers, decoder_filters))
@@ -192,6 +254,8 @@ def build_dv_mimi(
                 continue
             if key in own and own[key].shape == tensor.shape:
                 own[key].copy_(tensor)
+    if snake:
+        snake_decoder(mimi)
     stamp_state_names(mimi)
     return mimi
 
@@ -213,7 +277,7 @@ def decoder_state(mimi: MimiModel) -> dict[str, torch.Tensor]:
 def load_dv_decoder(path: Path, device: torch.device, frame_rate: float = 25.0, latent_dim: int = 32) -> MimiModel:
     state = safetensors.torch.load_file(str(path))
     mimi = build_dv_mimi(frame_rate, latent_dim, init_stock=False, decoder_res_layers=decoder_res_layers(state),
-                         decoder_filters=decoder_filters(state))
+                         decoder_filters=decoder_filters(state), snake=any(map(is_snake, state)))
     own = mimi.state_dict()
     for name, tensor in state.items():
         own[name.removeprefix("mimi.")].copy_(tensor)

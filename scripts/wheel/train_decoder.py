@@ -50,6 +50,9 @@ run starts from exactly that decoder's output) and the added blocks learn at --l
 it from the same section): the initial decoder is widened (pocket_tts_ja.wheel_codec.widen_decoder,
 net2wider with a little noise on the added channels, so the run starts within a percent of that
 decoder's output) and the whole SEANet decoder learns at --lr-fresh.
+--snake gives every ELU of the SEANet decoder Snake's periodic term (pocket_tts_ja.wheel_codec.SnakeELU,
+DACVAE's own activation; the stock wheel cannot load it: plan W2). With --init from an ELU decoder the
+terms start at zero, so the run starts from exactly that decoder's output; they learn at --lr-snake.
 
 Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
 (EMA, `mimi.*` names; pocket_tts_ja.wheel_codec.load_dv_decoder), run_dir/progress.jsonl and
@@ -93,6 +96,7 @@ from pocket_tts_ja.wheel_codec import (
     decoder_state,
     deepen_decoder,
     is_added,
+    is_snake,
     widen_decoder,
 )
 
@@ -230,6 +234,8 @@ def main() -> None:
     parser.add_argument("--init", type=Path, default=None, help="checkpoint.pt of a run to fine-tune from")
     parser.add_argument("--res-layers", type=int, default=1, help="residual blocks per SEANet decoder stage (> 1 needs --init)")
     parser.add_argument("--filters", type=int, default=STOCK_FILTERS, help="n_filters of the SEANet decoder (wider needs --init)")
+    parser.add_argument("--snake", action="store_true", help="Snake's periodic term on the SEANet decoder's ELUs (not stock)")
+    parser.add_argument("--lr-snake", type=float, default=5e-4, help="the Snake terms")
     args = parser.parse_args()
 
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -261,7 +267,7 @@ def main() -> None:
     stock_size = args.res_layers == 1 and args.filters == STOCK_FILTERS
     assert stock_size or args.init is not None or ckpt.exists(), "a deeper or wider decoder starts from --init"
     mimi = build_dv_mimi(init_stock=stock_size, decoder_res_layers=args.res_layers,
-                         decoder_filters=args.filters).to(device).train()
+                         decoder_filters=args.filters, snake=args.snake).to(device).train()
     named = decoder_named_parameters(mimi)
     for p in mimi.parameters():
         p.requires_grad_(False)
@@ -272,10 +278,12 @@ def main() -> None:
         widened = args.filters != STOCK_FILTERS and name.startswith("decoder.")
         return name.split(".")[0] in FRESH_MODULES or is_added(name, args.res_layers) or widened
 
-    fresh = [p for n, p in named if is_fresh(n)]
-    stock = [p for n, p in named if not is_fresh(n)]
-    opt_g = torch.optim.AdamW([{"params": stock, "lr": args.lr}, {"params": fresh, "lr": args.lr_fresh}],
-                              betas=(0.8, 0.99), weight_decay=0.0)
+    fresh = [p for n, p in named if is_fresh(n) and not is_snake(n)]
+    stock = [p for n, p in named if not is_fresh(n) and not is_snake(n)]
+    snake = [p for n, p in named if is_snake(n)]
+    groups = [{"params": stock, "lr": args.lr}, {"params": fresh, "lr": args.lr_fresh}]
+    groups += [{"params": snake, "lr": args.lr_snake}] if snake else []
+    opt_g = torch.optim.AdamW(groups, betas=(0.8, 0.99), weight_decay=0.0)
     disc = Discriminators(band_ffts=tuple(args.band_ffts)).to(device)
     opt_d = torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.0)
     mel = MultiScaleMelLoss(SR).to(device)
@@ -302,11 +310,15 @@ def main() -> None:
             state["mimi"] = widen_decoder(state["mimi"], mimi.state_dict(), seed=args.seed)
             state["ema"] = widen_decoder(state["ema"], ema.shadow, seed=args.seed)
             print(f"decoder widened to {args.filters} filters", flush=True)
+        if args.snake and not any(map(is_snake, state["mimi"])):
+            state["mimi"] = {**{n: t for n, t in mimi.state_dict().items() if is_snake(n)}, **state["mimi"]}
+            state["ema"] = {**{n: t for n, t in ema.shadow.items() if is_snake(n)}, **state["ema"]}
+            print("Snake terms added to the decoder (at zero)", flush=True)
         mimi.load_state_dict(state["mimi"])
         disc.load_state_dict(state["disc"])
         ema.shadow = state["ema"]
         print(f"fine-tuning from {args.init} (its step {state['step']})", flush=True)
-    base_lrs = [args.lr, args.lr_fresh]
+    base_lrs = [args.lr, args.lr_fresh] + ([args.lr_snake] if snake else [])
     log = open(args.run_dir / "progress.jsonl", "a")
     gan_len = min(args.frames * HOP, int(args.gan_seconds * SR))
     t0 = time.time()
