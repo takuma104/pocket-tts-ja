@@ -1466,3 +1466,17 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **判断**
   - wheel の decoder は W1x 20k にする。GTA の入力は P3m 20k から引いたものなので、S2 を採るなら S2 の teacher-forced の潜在で引き直す(124k clip で約 11 分)。
   - 公式 wheel で P3m 20k + W1x を確かめる(`p3m_w1x_wheel.sh`: voices、jvs_bal、jsut。CPU の RTF も、k=1 の 1.75〜1.83 と比べる)。
+- **公式 wheel 4.0.1 で P3m 20k + W1x**(`p3m_w1x_wheel.sh`。本機の CPU。exp/irodori_distill/package/p3m_20k_w1x。`decoder_seanet` は strict な loader で読めた)
+
+| | NISQA-TTS 女声: voices / jvs_bal / jsut | comb 2.5–4k: voices 女声 / female_02 / 05 / jvs_bal 女声 | Kana-CER: voices / jvs_bal / jsut | 1 s 以上の間: voices / jsut |
+|---|---:|---:|---:|---:|
+| release(本線) | 3.819 / 4.281 / 4.082 | 5.9 / 6.8 / 7.3 / 7.4 | 1.28 / 2.01 / 2.05% | 0.0 / 0.1% |
+| P3m 20k(GPU、DACVAE) | 3.976 / 4.375 / 4.175 | 5.5 / 6.5 / 8.1 / 6.4 | 2.20 / 4.12 / 3.29% | 4.5 / 12.9% |
+| P3m 20k wheel(W1 150k) | 3.862 / 3.940 / 3.905 | 3.5 / 5.6 / 4.9 / 5.3 | 2.24 / 4.04 / 3.03% | 2.0 / 8.1% |
+| P3m 20k wheel(soup4) | 3.893 / 3.947 / 3.925 | 3.8 / 5.8 / 5.5 / 5.5 | 2.24 / 4.08 / 3.03% | 2.0 / 8.1% |
+| **P3m 20k wheel(W1x)** | **4.020** / 4.005 / 3.957 | **4.6 / 6.5 / 6.8 / 6.4** | **1.88 / 3.70** / 3.02% | 2.0 / 8.0% |
+
+  - wheel でも W1x は全部の set で W1 150k より良い(NISQA-TTS 女声 +0.05〜0.16、mos / col も +0.03〜0.15)。voices の女声は release も GPU の経路も超えた。
+  - jvs_bal の wheel は、decoder によらず GPU の経路より −0.37 低い(W1 150k でも同じ)。wheel 側の生成(文の分け方など)の差で、decoder の問題ではない。
+  - CPU の RTF(6 worker × 2 thread、1 worker あたり): voices 1.727、jvs_bal 1.599、jsut 1.783。k=1 のとき(1.750 / 1.829 / 1.784)と差が見えない。この測り方では、深い decoder の費用は見えないくらい小さい。単独の RTF は、リリースの前に測る。
+  - 読み(jsut 3.0%)と長い間(jsut 8%)は release(2.05%、0.1%)にまだ負ける。これは生徒の側の問題で、S2 で見る(S1 40k は jsut 1.78%)。
