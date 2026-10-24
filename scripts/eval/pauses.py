@@ -51,9 +51,12 @@ def main() -> None:
     parser.add_argument("names", nargs="+", help="result directories; the first is the reference for the ratio")
     parser.add_argument("--floor-db", type=float, default=35.0)
     parser.add_argument("--min-ms", type=int, default=150)
+    parser.add_argument("--per-speaker", action="store_true", help="also the clips with a pause of 1 s or more per speaker")
     args = parser.parse_args()
 
-    keys = [json.loads(line)["key"] for line in open(args.eval_dir / "items.jsonl", encoding="utf-8")]
+    items = [json.loads(line) for line in open(args.eval_dir / "items.jsonl", encoding="utf-8")]
+    speaker = {it["key"]: it.get("speaker", "-") for it in items}
+    keys = [it["key"] for it in items]
     keys = [k for k in keys if all((args.eval_dir / n / f"{k}.wav").exists() for n in args.names)]
     stats = {n: [pauses(args.eval_dir / n / f"{k}.wav", args.floor_db, args.min_ms // FRAME_MS) for k in keys] for n in args.names}
     ref = np.array([d for d, _ in stats[args.names[0]]])
@@ -65,6 +68,13 @@ def main() -> None:
         longest = np.array([max(p, default=0.0) for _, p in stats[n]])
         print(f"| {n} | {dur.mean():.2f} | {np.mean(dur / np.maximum(ref, 1e-3)):.2f} | {total.mean():.2f} | {longest.mean():.2f}"
               f" | {np.mean(longest >= 1.0):.1%} |")
+    if args.per_speaker:  # S2h (10/25): female_04's long pauses alone grew 1 -> 13 of 20
+        print("clips with a pause of 1 s or more, per speaker")
+        print("| speaker | " + " | ".join(args.names) + " |\n|---|" + "---:|" * len(args.names))
+        for sp in sorted(set(speaker[k] for k in keys)):
+            idx = [i for i, k in enumerate(keys) if speaker[k] == sp]
+            cells = [str(sum(max(stats[n][i][1], default=0.0) >= 1.0 for i in idx)) for n in args.names]
+            print(f"| {sp} ({len(idx)}) | " + " | ".join(cells) + " |")
 
 
 if __name__ == "__main__":
