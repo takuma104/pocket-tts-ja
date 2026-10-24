@@ -1693,3 +1693,23 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - P3m 20k から: 読みはどのセットでも 0.1〜1.9 pt 良く、JKYB-mini は +4.3 pt。長い間は jsut / pair_probe で半分以下(12.9 → 5.7%、19.3 → 6.0%)。女声の NISQA-TTS は +0.03〜0.08。
   - リリースとの差: 読みはまだ少し及ばない(jsut 2.20 / 2.05%、JKYB-mini 94.2 / 95.1%)。短文はリリースより良い(2.76 / 4.18%)。長い間はリリースの方が少ない。
   - 1 / 4 / 8 step(`s2_steps.sh`)、W1x を通したもの(`s2_w1x.sh`)、HS_s2_60k(20k step、18:33〜)は続きで出る。
+
+### 10/24 19:50: HS_s2_60k は 1 step で S2 60k の 8 step に並ぶ。最終の生徒の GTA で decoder を fine-tune(W1w2)
+
+- **HS_s2_60k**(S2 60k の backbone を固定、head を 20k step。18:33〜19:20、7.5 it/s)
+
+| | NISQA-TTS 女声: voices / jvs_bal / jsut | comb 2.5–4k: voices 女声 / female_02 / 03 / 05 / jvs_bal 女声 | Kana-CER: voices / jvs_bal / jsut | 1 s 以上の間: voices / jvs_bal |
+|---|---:|---:|---:|---:|
+| S2 60k、1 step | 4.005 / 4.405 / 4.258 | 6.5 / 7.7 / 5.2 / 8.3 / 6.9 | 2.08 / 2.27 / 2.20% | 4.0 / 3.0% |
+| S2 60k、8 step | 4.061 / 4.378 / 4.288 | 6.9 / 8.6 / 4.9 / 9.2 / 7.2 | 1.82 / 2.31 / 2.19% | 3.0 / 4.0% |
+| **HS、1 step** | **4.048 / 4.361 / 4.273** | **6.9 / 8.6 / 5.1 / 9.0 / 6.9** | 1.82 / 2.52 / 2.18% | 3.5 / 4.0% |
+
+  - 1 step から 8 step への差は、ほぼ全部 HS の 1 step で戻る(voices の女声 NISQA-TTS 77%、jsut 50%、comb は female_02 で全部、female_05 で 78%)。
+  - jvs_bal の読み(2.52%)だけが 1 / 8 step より少し悪い(100 clip、差は 2〜3 clip 分)。
+  - **生徒の候補: S2 60k + HS(wheel の既定の 1 step)**。HB(大きい head)が効けば、その head で同じことをやり直す。
+- **W1w2**(`runs/irodori_distill/w1w2_start.sh`、19:46〜)
+  - HS_s2_60k の GTA(温度 0.7、1 step、`gta_latents.py`): w1_targets の 123,905 clip と hi1 の 15,749 clip(870 clips/s)。
+  - W1w から 20k step。入力は教師の潜在(w1_targets、w1_targets_hi1)と HS_s2_60k の GTA。レシピは W1w と同じ(seed 5)。
+  - 評価: HS_s2_60k の生成を W1x / W1w / W1w2 で decode して DACVAE と比べる。Anime / y3hi の往復。22:00 ごろ。
+  - HB の評価(galleria2 で学習中、20:30 ごろ)と GPU を分け合うので、HB の 24L の生成は batch 4 にした。
+- **次**: package(S2 60k + HS、W1w2、W1e)を公式 wheel 4.0.1 で voices / jvs_bal / jsut に回し、CPU の RTF を測る。
