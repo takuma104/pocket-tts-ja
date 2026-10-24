@@ -1749,3 +1749,22 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - 評価(`s1h_fetch.sh`): voices / jvs_bal で 1 / 8 step、S1 と同じサンプリング。comb_by_f0、声ごとの comb、reencode_dist、NISQA、間、読み。試聴ページ `exp/listening/s1h_hi2/`。
   - 高い F0 で S1 60k より教師に近づけば、S2(深さの蒸留)と HS を S1h からやり直す。
 - **デコーダ**: female_02 / 05 の崩れはまず潜在側にあるので、先に潜在側を直す。その後で、デコーダの裏返り(ELU の SEANet)がどれだけ残るかを見る。根本対策は W2(pocket-tts に Snake 型デコーダを PR)だが、外部に出すので、その時点でユーザーに相談する。
+
+### 10/24 23:00: HB は打ち切り、W1w2 がいちばん良い W1、リリース候補(S2 60k + HS + W1w2)の公式 wheel での結果。S1h は学習中
+
+- **HB 20k**(S1 60k の 24L に幅 1024 の head、`hb_fetch.sh`): comb 2.5–4k(female_02 / 05)は 1 step で 7.7 / 8.9 dB、S1 の 512 head の 8 step(7.5 / 9.0)と同じ。8 step でも 7.8 / 9.1 で +0.1〜0.3 dB。NISQA、読み、間は同じ。1 step を 8 step 並みにするのは HS が 512 の head でできているので、大きい head は追わない(wheel の CPU 時間も増えない)。試聴ページ: `exp/listening/hb_s1_1024/`(JVS を含むためローカルのみ)。
+- **W1w2**(W1w を HS_s2_60k の GTA で 20k step): HS_s2_60k の生成を decode すると W1w とほぼ同じ(voices NISQA-TTS ±0.003、jvs_bal で mos +0.026 / col +0.017)。往復では少し良い(NISQA-TTS: Anime 3.792 → 3.829、y3hi 4.270 → 4.288。F0 のずれ > 1%: 9.4 → 9.1%)。どの W1 も 4–6 kHz の倍音は 1.4〜2.0 dB(DACVAE の decode は約 5 dB)。
+- **リリース候補を公式 wheel 4.0.1 で**(`hs60_wheel.sh`、`exp/irodori_distill/package/hs60_w1w2/`、fp32 454 MB。この機の CPU、6 worker × 2 thread)
+
+| | Kana-CER: voices / jvs_bal / jsut | NISQA-TTS: voices / jvs_bal / jsut | NISQA mos: voices / jvs_bal / jsut | 類似度: voices / jvs_bal | 1 s 以上の間: voices / jvs_bal / jsut | comb 2.5–4k: voices 女声 / female_02 / 05 |
+|---|---:|---:|---:|---:|---:|---:|
+| リリース(CC BY) | 1.28 / 2.01 / 2.05% | 3.699 / 4.201 / 4.127 | 4.186 / 4.525 / 4.344 | 0.689 / 0.650 | 0.0 / 0.0 / 0.1% | 5.9 / 6.8 / 7.3 |
+| P3m 20k + W1x(前の候補) | 1.88 / 3.70 / 3.02% | 3.780 / 3.951 / 4.017 | 4.380 / 4.472 / 4.288 | 0.737 / 0.646 | 2.0 / 1.0 / 8.0% | 4.6 / 6.5 / 6.8 |
+| **S2 60k + HS + W1w2** | 1.73 / 2.54 / 2.11% | 3.843 / 4.021 / 4.090 | 4.349 / 4.612 / 4.376 | 0.716 / 0.632 | 1.5 / 2.0 / 4.2% | 6.1 / 8.3 / 9.2 |
+| (同じ生徒の GPU 版、DACVAE) | 1.82 / 2.52 / 2.18% | 3.796 / 4.238 / 4.242 | 4.434 / 4.634 / 4.474 | 0.747 / 0.641 | 3.5 / 4.0 / 5.7% | 6.9 / 8.6 / 9.0 |
+
+  - 前の wheel 候補から、読み(jvs_bal 3.70 → 2.54%、jsut 3.02 → 2.11%)、NISQA、長い間がそろって良くなった。
+  - リリースと比べると: 女声の倍音(female_02 / 05 で +1.5 / +1.9 dB)と NISQA mos は上。読みは jsut でほぼ並ぶが voices / jvs_bal はまだ少し下。NISQA-TTS は voices で上、jvs_bal / jsut で下。長い間はリリースにはほぼない。
+  - CPU: RTF per worker 1.80〜1.95(2 thread)。P3m + W1x(1.75〜1.83)とほぼ同じ。
+  - 試聴ページ: `exp/listening/hs60_wheel/`(教師 / リリース / GPU 版 / wheel 版 / 前の候補。JVS を含むためローカルのみ)。
+- **hi2 の教師データ**: 20,580 行のうち 16,084 clip が QC を通った(78%)。300 clip の中央値 F0 は 364 Hz(10–90%: 330–391 Hz、70% が 350 Hz 以上)で、female_02 / 05 の帯域。S1h_all は学習 352,228 行(うち hi2 が 32,168 行)。S1h は 22:16 から 1.58 it/s、01:00 ごろに 15k。評価は `s1h_fetch.sh`。
