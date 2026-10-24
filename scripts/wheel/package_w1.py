@@ -7,8 +7,8 @@ from a W1 encoder (scripts/wheel/train_encoder.py, `mimi.encoder / encoder_trans
 downsample`), and the FlowLM from a student snapshot (EMA, `flow_lm.*`, CFG baked in: the wheel
 runs without CFG). The decoder and the encoder must share the delay K they were trained with:
 the wheel's audio then starts K frames late, and the frames after EOS (12, as the students were
-trained and evaluated) cover the end. A decoder with more residual blocks per stage than the stock
-one (train_decoder.py --res-layers) gets them as mimi.decoder_seanet.
+trained and evaluated) cover the end. A decoder with more residual blocks per stage or more filters
+than the stock one (train_decoder.py --res-layers / --filters) gets them as mimi.decoder_seanet.
 
 replace_characters also deletes spaces (unless --keep-spaces): the wheel's chunker joins the comma
 pieces of a sentence over 50 tokens with ", " and packs sentences as "A. B.", forms the teacher's
@@ -48,7 +48,7 @@ import torch
 import yaml
 
 from pocket_tts.models.tts_model import TTSModel
-from pocket_tts_ja.wheel_codec import decoder_res_layers
+from pocket_tts_ja.wheel_codec import decoder_filters, decoder_res_layers
 
 DECODE_SIDE = ("quantizer", "upsample", "decoder_transformer", "decoder")
 ENCODE_SIDE = ("encoder", "encoder_transformer", "downsample")
@@ -100,8 +100,10 @@ def main() -> None:
     assert flow and all(k.startswith("flow_lm.") for k in flow), args.snapshot
     decode = side(args.decoder, DECODE_SIDE)
     state = {**flow, **decode, **side(args.encoder, ENCODE_SIDE)}
-    if (k := decoder_res_layers(decode)) != cfg["mimi"]["seanet"]["n_residual_layers"]:
-        cfg["mimi"]["decoder_seanet"] = {**cfg["mimi"]["seanet"], "n_residual_layers": k}
+    seanet = cfg["mimi"]["seanet"]
+    k, nf = decoder_res_layers(decode), decoder_filters(decode)
+    if (k, nf) != (seanet["n_residual_layers"], seanet["n_filters"]):
+        cfg["mimi"]["decoder_seanet"] = {**seanet, "n_residual_layers": k, "n_filters": nf}
     dtype = getattr(torch, args.dtype)
     state = {k: v.to(dtype).contiguous() for k, v in state.items()}
     weights_dir = args.out / args.name

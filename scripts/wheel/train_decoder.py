@@ -46,6 +46,10 @@ recipes, averaged by scripts/wheel/soup_decoders.py, as main's CC decoder soup4)
 stock 1 (the wheel reads them from the config's mimi.decoder_seanet): the initial decoder is
 deepened (pocket_tts_ja.wheel_codec.deepen_decoder, the added blocks start as the identity, so the
 run starts from exactly that decoder's output) and the added blocks learn at --lr-fresh.
+--filters NF (with --init) gives the SEANet decoder NF filters (n_filters, stock 64; the wheel reads
+it from the same section): the initial decoder is widened (pocket_tts_ja.wheel_codec.widen_decoder,
+net2wider with a little noise on the added channels, so the run starts within a percent of that
+decoder's output) and the whole SEANet decoder learns at --lr-fresh.
 
 Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
 (EMA, `mimi.*` names; pocket_tts_ja.wheel_codec.load_dv_decoder), run_dir/progress.jsonl and
@@ -78,14 +82,17 @@ from pocket_tts_ja.dacvae import DACVAE
 from pocket_tts_ja.dacvae import HOP as DV_HOP
 from pocket_tts_ja.dacvae import SAMPLE_RATE as DV_SR
 from pocket_tts_ja.dv_loader import SILENCE_LATENT
+from pocket_tts_ja.mimi_utils import load_pocket_config
 from pocket_tts_ja.wheel_codec import (
     FRESH_MODULES,
     build_dv_mimi,
+    decoder_filters,
     decoder_named_parameters,
     decoder_res_layers,
     decoder_state,
     deepen_decoder,
     is_added,
+    widen_decoder,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
@@ -93,6 +100,7 @@ from hf_structure import N_FFT, band_stats, refine_f0, spectrum, voiced_f0  # no
 from spectral_lines import contrast, ltas  # noqa: E402
 
 SR = 24000
+STOCK_FILTERS = load_pocket_config().mimi.seanet.n_filters
 HOP = DV_HOP * SR // DV_SR  # 960 samples per 25 Hz frame
 
 
@@ -218,6 +226,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--init", type=Path, default=None, help="checkpoint.pt of a run to fine-tune from")
     parser.add_argument("--res-layers", type=int, default=1, help="residual blocks per SEANet decoder stage (> 1 needs --init)")
+    parser.add_argument("--filters", type=int, default=STOCK_FILTERS, help="n_filters of the SEANet decoder (wider needs --init)")
     args = parser.parse_args()
 
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -246,8 +255,10 @@ def main() -> None:
     clips, max_context = rescan()
 
     ckpt = args.run_dir / "checkpoint.pt"
-    assert args.res_layers == 1 or args.init is not None or ckpt.exists(), "a deeper decoder starts from --init"
-    mimi = build_dv_mimi(init_stock=args.res_layers == 1, decoder_res_layers=args.res_layers).to(device).train()
+    stock_size = args.res_layers == 1 and args.filters == STOCK_FILTERS
+    assert stock_size or args.init is not None or ckpt.exists(), "a deeper or wider decoder starts from --init"
+    mimi = build_dv_mimi(init_stock=stock_size, decoder_res_layers=args.res_layers,
+                         decoder_filters=args.filters).to(device).train()
     named = decoder_named_parameters(mimi)
     for p in mimi.parameters():
         p.requires_grad_(False)
@@ -255,7 +266,8 @@ def main() -> None:
         p.requires_grad_(True)
 
     def is_fresh(name: str) -> bool:
-        return name.split(".")[0] in FRESH_MODULES or is_added(name, args.res_layers)
+        widened = args.filters != STOCK_FILTERS and name.startswith("decoder.")
+        return name.split(".")[0] in FRESH_MODULES or is_added(name, args.res_layers) or widened
 
     fresh = [p for n, p in named if is_fresh(n)]
     stock = [p for n, p in named if not is_fresh(n)]
@@ -282,6 +294,10 @@ def main() -> None:
             state["mimi"] = deepen_decoder(state["mimi"], mimi.state_dict())
             state["ema"] = deepen_decoder(state["ema"], ema.shadow)
             print(f"decoder deepened to {args.res_layers} residual blocks per stage", flush=True)
+        if decoder_filters(state["mimi"]) != args.filters:
+            state["mimi"] = widen_decoder(state["mimi"], mimi.state_dict(), seed=args.seed)
+            state["ema"] = widen_decoder(state["ema"], ema.shadow, seed=args.seed)
+            print(f"decoder widened to {args.filters} filters", flush=True)
         mimi.load_state_dict(state["mimi"])
         disc.load_state_dict(state["disc"])
         ema.shadow = state["ema"]
