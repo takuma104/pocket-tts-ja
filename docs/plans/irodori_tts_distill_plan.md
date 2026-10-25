@@ -2128,3 +2128,30 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
     - 3k 足すだけで半分になる(S1nl 10k は学習の途中の悪い点だったらしい)。間の長い行を除くと、さらに少し減る。ただし文の数が少なく、ctl との差は誤差の内。
     - 読みは ctl も pf も S1nl 10k より良い。
   - **次**: S1nl_pf から S2 と HS をやり直す(S2nlf: S2nl 10k を S1nl_pf の下で 5k、HSnlf: 20k、`configs/train/S2nlf.yaml` / `HSnlf.yaml`、`runs/irodori_distill/pf_chain.sh`)。GPU 版と wheel 版で HSnl と比べる。jsut は 1 声あたり 100 文あるので、間を声ごとにも数える。
+- **W1ks(Snake の項を足した DAC 型の SEANet、ゼロから)の 4–6 kHz の倍音が戻り始めた**
+  - 検証の teacher_comb46(教師の latent の decode、DACVAE 5.48): 30k〜50k は 1.0 前後(W1 main と同じ)。60k から上がり、100k で 2.3、120k で 3.4。W1 main(ELU)は 150k まで 0.9〜1.0 のまま。W1k(同じ形で Snake なし)は 55k で 1.1。
+  - Anime と y3hi の往復(`runs/irodori_distill/w1ks_recon120.sh`):
+
+| 女声 | 2.5–4k comb | 4–6k comb | F0 誤差 p90 | 有声 | NISQA-TTS(soup4 との差) |
+|---|---:|---:|---:|---:|---:|
+| Anime: DACVAE | 10.3 | 5.8 | 4.5 cents | 98.9% | — |
+| Anime: W1m_150k | 5.1 | 0.6 | 21.3 | 89.0% | +0.042 ± 0.053 |
+| Anime: **W1ks_120k** | **8.0** | **3.1** | **11.4** | **96.9%** | **+0.430 ± 0.055** |
+| y3hi: DACVAE | 9.2 | 5.3 | 6.9 | 98.9% | — |
+| y3hi: W1m_150k | 6.4 | 1.0 | 13.7 | 97.4% | −0.086 ± 0.023 |
+| y3hi: **W1ks_120k** | **8.1** | **3.1** | **10.2** | 98.5% | **+0.120 ± 0.023** |
+
+  - HSnl の生成(GPU 版の潜在)を decode し直すと(`runs/irodori_distill/w1ks_students.sh`):
+
+| voices | 4–6k comb 女声 / female_02 / female_05 | 類似度 | Kana-CER | NISQA-TTS 女声(W1w2 との差) |
+|---|---:|---:|---:|---:|
+| DACVAE | 3.9 / 5.2 / 6.7 | 0.759 | 1.20% | +0.094 ± 0.029 |
+| W1w2(いまの wheel) | 1.5 / 2.0 / 1.4 | 0.732 | 1.20% | 0 |
+| **W1ks_120k** | **2.9 / 3.4 / 4.3** | **0.746** | 1.15% | −0.070 ± 0.028 |
+
+    - S1nl_pf の 8 step の生成でも同じ(female_05: W1w2 1.4 → W1ks 3.7、DACVAE 5.8)。
+    - NISQA だけは女声で W1w2 より少し低い。W1w2 は生徒の GTA で fine-tune してあり、W1ks はまだ。
+  - CPU の decode(2 thread): W1w2 0.166、W1k 0.192、**W1ks 0.270** s / 音声 1 s。DACVAE の decoder は 0.85。
+  - **W1ks2**: W1ks 150k を HSnl の GTA で 20k step(W1w2 の手順、Snake の項は 1e-4)。galleria2 の `runs/irodori_distill/w1ks2.sh` が W1ks の終わり(09:30 ごろ)を待って始める。評価は本機の `runs/irodori_distill/w1ks_final.sh`(往復、HSnl の潜在、試聴ページ `exp/listening/w1ks_final/` と `exp/listening/w1ks_students/`)。
+  - 試聴ページ `exp/listening/w1ks_recon120/`(ローカルのみ)。
+  - Snake の decoder は公式 wheel 4.0.1 では読めない。使うには W2 が要る(pocket-tts の SEANet に、ELU に Snake の項を足した活性化を選べるオプションを足す PR。各チャネルに alpha / beta の 2 つのパラメータ。DACVAE の decoder を丸ごと積むよりずっと小さい変更)。外に出すので、ユーザーに相談する。
