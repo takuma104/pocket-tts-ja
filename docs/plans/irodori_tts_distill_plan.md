@@ -1875,3 +1875,35 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **判断**
   - W1(公式 wheel のまま)では、倍音は今の水準(4–6 kHz で 1.5〜2 dB)が上限。生徒の潜在の改善は、2.5–4 kHz の帯までしか wheel の出力に届かない。
   - 残る手は W2(pocket-tts に Snake 型などのデコーダを足す PR)。外部に出すので、ユーザーに相談する。
+
+### 10/25 09:30: S2h5 は長い間を戻さない。間は「同じ場所で長い」で、温度を上げると縮む。Snake 型デコーダの試し(W2 の下調べ)を開始
+
+- **S2h5 / HS_s2h5**(S1h 5k が教師、hi2 の長い間の clip を除いたデータ。`s2h5_fetch.sh`)
+  - GPU 版(HS_s2h5、1 step)を HS_s2h と比べると、voices の 1 s 以上の間は 11.5 → 7.0%(female_04 13 → 8 / 20)。jsut は 10.2 → 10.9%、jvs_bal は 4.0 → 7.0% で戻らない。
+  - 倍音は少し戻る(female_05 の 2.5–4k: 11.6 → 10.9 dB、教師 11.7)。読みと NISQA はほぼ同じ。
+  - wheel 版(HSh5_wheel_w1w2)では長い間はかえって増える。voices 6.5 → 9.5%、jsut 8.6 → 12.8%。読みは jvs_bal 2.11 → 2.33%、jsut 2.02 → 1.96%。
+  - → データから長い間を除いても効かない。wheel の候補は HSh のまま。試聴ページ `exp/listening/s2h5_wheel/`(ローカルのみ)。
+- **長い間の形**(`pauses.py` に間の数 / 中央値 / p90 を足した)
+  - 生徒は、教師と同じ場所で同じくらいの数だけ間を取る(jsut で 1 clip あたり 2.3〜2.5)。間がどれも長い。
+  - jsut の中央値: 教師 0.42 s、S1 60k / S2 60k / HS_s2_60k 0.52、HS_s2h 0.54、HS_s2h5 0.56(温度 0.7)。24L の S1 も同じなので、深さではなくサンプリング側の性質。
+  - 既存の結果では、温度 0.5 でさらに延び(P3m 0.58)、1.0 では止まりが出る(P2 60k の p90 6 s)。
+- **温度スイープ**(`runs/irodori_distill/temp_sweep.sh`、HS_s2h5、GPU 版、1 step)
+
+| 温度 | jsut: 1 s 以上の間 / 中央値 / p90 | voices: 1 s 以上の間(female_04) | Kana-CER jsut / voices | NISQA-TTS voices / jsut | 類似度 jsut |
+|---|---:|---:|---:|---:|---:|
+| 教師 | 0.4% / 0.42 / 0.66 s | 0.5%(0) | 1.77 / 1.18% | 3.609 / 4.422 | 0.708 |
+| 0.6 | 19.8% / 0.62 / 1.00 s | 11.5%(11) | 2.53 / 2.20% | 3.777 / 4.245 | 0.612 |
+| 0.7 | 10.9% / 0.56 / 0.88 s | 7.0%(8) | 2.15 / 1.77% | 3.782 / 4.239 | 0.610 |
+| 0.8 | 6.2% / 0.52 / 0.80 s | 5.5%(6) | 2.18 / 1.86% | 3.725 / 4.234 | 0.609 |
+| 0.9 | 4.0% / 0.50 / 0.75 s | 2.5%(2) | 2.10 / 1.91% | 3.722 / 4.227 | 0.604 |
+
+  - 温度を上げるほど間が縮む。読みはほぼ同じ(jsut は 0.9 がいちばん良い)。NISQA-TTS は voices で −0.06(0.8 / 0.9)、jsut はほぼ同じ。倍音は温度で変わらない。
+  - 公式 wheel のパッケージは `default_temperature` を持つ(`package_w1.py --temp`)ので、温度は wheel のまま変えられる。
+  - 続き(`runs/irodori_distill/temp_hi.sh`): GPU 版で HS_s2h / HS_s2_60k の 0.9 / 1.0、HS_s2h5 の 1.0。同時に CPU で HSh を温度 0.9 にした wheel 版(HSh_wheel_w1w2_t09)を voices / jvs_bal / jsut に。試聴ページ `exp/listening/temp09_wheel/`。
+- **Snake 型デコーダの下調べ**(W2 の判断材料。社内だけで、PR は出していない)
+  - `wheel_codec.SnakeELU`: elu(x) + β sin²(αx) / α(チャンネルごと)。β = 0 から始めれば、学習済みの ELU デコーダと同じ出力から始まる。逆伝播用に x だけを残す自前の autograd にした(素直な式では W1w2 + Snake が 32 GB を超えた)。`train_decoder.py --snake --lr-snake --snake-beta0`。
+  - **W1sn**(galleria2、`runs/irodori_distill/w1sn.sh`): W1w2 に Snake の項を足して 20k step。データとレシピは W1w2 と同じ。
+    - 2.5k step: 検証の 4–6 kHz comb 1.32 dB(W1w2 1.43、DACVAE 5.47)。β は |平均| 0.01、最大 0.09 で、ほとんど使われていない。
+    - 学習済みの ELU の解から始めると、周期の項に移る動機が弱いらしい。
+  - **W1sm**(この機、`runs/irodori_distill/w1sm.sh`): W1 main(ELU、64 filters)と同じレシピで、Snake の項(β = 1、x > 0 で Snake そのもの)を最初から入れた。
+    - W1_main_d2 の検証の 4–6 kHz comb は 150k step を通して 0.84〜1.05 dB。同じ step で比べ、30k ほどで判断する。

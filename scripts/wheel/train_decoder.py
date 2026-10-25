@@ -53,6 +53,8 @@ decoder's output) and the whole SEANet decoder learns at --lr-fresh.
 --snake gives every ELU of the SEANet decoder Snake's periodic term (pocket_tts_ja.wheel_codec.SnakeELU,
 DACVAE's own activation; the stock wheel cannot load it: plan W2). With --init from an ELU decoder the
 terms start at zero, so the run starts from exactly that decoder's output; they learn at --lr-snake.
+Without --init they start at --snake-beta0 (1: elu(x) + sin^2(x), which is Snake for x > 0), for a
+decoder trained with them from the stock one as W1 main was without.
 
 Writes run_dir/checkpoint.pt (resumed automatically), run_dir/decoder_step_<step>.safetensors
 (EMA, `mimi.*` names; pocket_tts_ja.wheel_codec.load_dv_decoder), run_dir/progress.jsonl and
@@ -236,6 +238,7 @@ def main() -> None:
     parser.add_argument("--filters", type=int, default=STOCK_FILTERS, help="n_filters of the SEANet decoder (wider needs --init)")
     parser.add_argument("--snake", action="store_true", help="Snake's periodic term on the SEANet decoder's ELUs (not stock)")
     parser.add_argument("--lr-snake", type=float, default=5e-4, help="the Snake terms")
+    parser.add_argument("--snake-beta0", type=float, default=0.0, help="the Snake terms' start without --init")
     args = parser.parse_args()
 
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +276,11 @@ def main() -> None:
         p.requires_grad_(False)
     for _, p in named:
         p.requires_grad_(True)
+    if args.snake and args.init is None and not ckpt.exists():
+        with torch.no_grad():
+            for n, p in named:
+                if n.endswith(".beta"):
+                    p.fill_(args.snake_beta0)
 
     def is_fresh(name: str) -> bool:
         widened = args.filters != STOCK_FILTERS and name.startswith("decoder.")
