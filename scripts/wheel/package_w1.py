@@ -22,7 +22,10 @@ when the caller passes none: at -4 the students stop after the first of two sent
 
 Writes into --out:
   <name>.yaml               model config for `pocket-tts generate --config`
-  <name>/model.safetensors  FlowLM + Mimi, as the stock loader reads it (--dtype of every tensor)
+  <name>/model.safetensors  FlowLM + Mimi, as the stock loader reads it (--dtype of every tensor; the
+                            yaml keeps dtype float32, as the stock configs do: the loader copies the
+                            tensors into a float32 model, while a bfloat16 model fails in 4.0.1, whose
+                            FlowLM feeds float32 into a bfloat16 out_eos)
   tokenizer.model           the SentencePiece model
 
 With --repo the yaml points at hf://<repo>/... (add --revision once the weights are committed);
@@ -124,7 +127,7 @@ def main() -> None:
     cfg["weights_path"] = ref(weights)
     cfg.pop("weights_path_without_voice_cloning", None)
     cfg["flow_lm"]["lookup_table"]["tokenizer_path"] = ref(tokenizer)
-    cfg["flow_lm"]["dtype"] = cfg["mimi"]["dtype"] = args.dtype
+    cfg["flow_lm"]["dtype"] = cfg["mimi"]["dtype"] = "float32"
     cfg["default_temperature"] = args.temp
     cfg["model_recommended_frames_after_eos"] = args.frames_after_eos
     if args.eos_threshold is not None:

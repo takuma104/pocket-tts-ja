@@ -1952,3 +1952,28 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - `train_decoder.py --scratch --res-kernel --dilation-base --compress` を足した。これらの値は safetensors の metadata に入れる(`wheel_codec.save_decoder`。dilation は重みから分からないため)。`load_dv_decoder`、`package_w1.py`、`soup_decoders.py` がそれを読む。
   - CPU 費用(`cpu_cost.py --decoders`、フレームごと、2 thread): 64x1(公式の形)0.149、96x3(W1w2)0.261、**96x3 k7 d3 0.290**、96x3 k7 d3 compress 1 0.358、128x3 k7 d3 0.402 s / s。
   - W1 main のレシピ(w1_targets だけ、delay 2、150k の schedule)。W1_main_d2 と同じ step で比べる。
+
+### 10/25 12:30: 生徒は 2 桁以上の数字を 1 桁ずつ読む(学習データに 1 文もない)。数字のデータ num を作り、S1n → S2n → HSn をやり直す。bf16 のパッケージは float32 並み
+
+- **数字の読み**
+  - voices の読みでリリースに負ける分(1.82 vs 1.28%)は、ほぼ 1 文に集まっている。「山間部では、雪が５０センチ以上降った。」の誤りは、10 声の合計で候補 30、リリース 1、教師 0。
+  - 生徒は 1 桁の数字は読める(３分の１、２人、６月)。2 桁以上は 1 桁ずつ読む。５０ → ゴゼロ、３０分 → サンゼロブン、２５００ドル → ニゴゼロゼロドル、３１８号室 → サンイチハチ、１２ヶ国 → イチニカコク。
+  - jsut で 2 桁以上の数字を含む 8 文の Kana-CER: 教師 0.4%、リリース 1.4%。生徒は P2 から S1(24L)、S2、HS、wheel 版まで、どれも 14〜16%。
+  - **原因: 蒸留の学習データ(S1h_all の 352,228 文)に、2 桁以上の数字を含む文が 1 本もない**。数字を含む文は 12,651 本あるが、すべて 1 桁。main の合成文の pool に由来する。リリースは、実音声(Emilia-YODAS)の書き起こしから数字を学んでいた。
+  - 全角か半角かの問題ではない。全角数字は、リリースと同じく YAML の `replace_characters` で半角になっている。全角を半角に直す置き換えを試しても、Kana-CER は同じだった(数字を含む 45 本で 5.30 → 5.44%、`runs/irodori_distill/digits_check.sh`)。
+- **num: 数字のデータ**(`scripts/teacher/num_rows.py`)
+  - Emilia-YODAS JA(CC BY)の学習用の書き起こし(`data/emilia_ja/train_rechecked_yodas.jsonl`、121,371 本)のうち、2 桁以上の数字を含む文は 10,740 本。
+  - そこから、小数点と桁区切りのカンマを含む文を除き(main の正規化で「52.6」が「52. 6」に崩れている)、1.5〜15 s の 7,248 文を使う。
+  - 7,048 文を、教師の参照声 3,000 から 2 声ずつで読ませる(14,096 行、元の録音で 33.5 h)。残りの 200 文は評価用(`exp/irodori_distill/eval/num_eval`、リリースの 10 声で 20 文ずつ)。
+  - QC の手本は書き起こしの読み(pyopenjtalk。数字も読む)。録音の kana-whisper の読みは、話者の言いよどみと ASR の誤りを含む(Kana-CER 0.08 以内に入るのは 4 割)ため、`rec_kana` として残すだけにした。`--max-cer 0.05`。
+  - 生成はこの機の GPU(`runs/irodori_distill/num_pipeline.sh`)。W1ks はその間止めて、5k の checkpoint から再開する。
+- **S1n → S2n → HSn**(`runs/irodori_distill/num_train.sh`、`configs/train/S1n_num.yaml` / `S2n.yaml` / `HSn.yaml`)
+  - S2 は S1h の出力を手本にする(深さの蒸留)ので、数字は S1 から教える必要がある。
+  - S1n: S1h 15k から 10k step。S1h_all のセット + num で、hi2 と num の学習行は 2 回ずつ入れる。S2n: S2h 20k から S1n の下で 10k step。HSn: S2n の上で 1 step の head を 20k step。
+  - galleria2 での速さ(S1h 1.58、S2h 2.55、HS 7.5 it/s)で、約 3.8 h。
+- **bf16 のパッケージ**(`runs/irodori_distill/bf16_check.sh`。HSh + W1w2、温度 0.9、227 MB。float32 は 454 MB)
+  - 公式 wheel 4.0.1 は、YAML の dtype を bfloat16 にすると落ちる(FlowLM が float32 の出力を bfloat16 の `out_eos` に入れる)。`package_w1.py` は dtype を常に float32 と書くようにした。重みを bf16 で保存し、wheel が読むときに float32 へ写す。
+  - float32 との差: Kana-CER voices 1.82 → 1.91%、jvs_bal 2.23 → 2.31%。NISQA-TTS voices −0.03 ± 0.02、jvs_bal +0.02 ± 0.02。間と倍音は同じ。サンプルの違いの範囲。
+- **W1k の途中**(DAC の残差の形、ゼロから): 15k で検証 mel 0.260、F0 誤差の中央値 4.7 cents、有声 0.95、4–6 kHz comb 1.06 dB。W1_main_d2 は 15k で 0.283 / 16 cents / 0.80 / 0.74 dB。
+  - 収束は速い(W1_main_d2 の 25k ほどの水準)。倍音はまだ 1 dB 前後。30k で判断する。
+- **W1sm は 30k で止めた**: mel 0.280、F0 誤差の中央値 8.3 cents、comb 0.78 dB。W1_main_d2 の 30k は 0.254 / 3.5 cents / 1.01 dB。Snake の項を最初から入れても、倍音は出ず、収束が遅れるだけ。
