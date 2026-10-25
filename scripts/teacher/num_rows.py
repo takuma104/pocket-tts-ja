@@ -1,4 +1,4 @@
-"""num: teacher rows for sentences with multi-digit numbers, and a held-out set to measure them.
+"""num / latin: teacher rows for the sentences the distillation data lacks, and a held-out set of each.
 
 None of the 352k training sentences of the distillation (main's synthetic CC BY pool, normalised
 as main's training text) has a number of two or more digits, so every student reads "50" digit by
@@ -9,6 +9,12 @@ old_kana that qc.py checks the teacher against is the reading of the transcript 
 reads the numbers: "ジュウニジ", "センキュウヒャクハチジュウネン"); the kana-whisper reading of the
 recording (asr_recheck_full.jsonl, kept as rec_kana) carries the speaker's fillers and the ASR's
 slips (4 in 10 within a Kana-CER of 0.08 of the transcript's reading).
+
+--kind latin takes the transcripts with Latin letters (YouTube, USB, NHK, iPhone; 10% of Emilia-YODAS
+JA, 0.3% of the distillation's sentences) and no 2+ digit number (those are in num). pyopenjtalk
+spells the words it does not know letter by letter (Python -> ピイワイティイエエチオオエヌ), so its
+reading is a poor reference there: the eval set is scored against the teacher's transcripts
+(kana_cer.py --ref-dir teacher).
 
     uv run python scripts/teacher/num_rows.py --per-text 2
     -> data/irodori_distill/teacher/rows_num.jsonl: each training sentence read by --per-text of
@@ -33,6 +39,14 @@ EMILIA = Path("data/emilia_ja")
 VOICES = Path("exp/irodori_distill/eval/voices/items.jsonl")
 MULTI_DIGIT = re.compile(r"[0-9]{2,}")
 BROKEN_NUMBER = re.compile(r"[0-9][.,] ?[0-9]")  # a decimal point or thousands comma, split by the normaliser
+LATIN = re.compile(r"[A-Za-z]")
+JAPANESE = re.compile(r"[ぁ-んァ-ン一-龥]")
+
+
+def wanted(kind: str, t: str) -> bool:
+    if kind == "num":
+        return bool(MULTI_DIGIT.search(t)) and not BROKEN_NUMBER.search(t)
+    return bool(LATIN.search(t)) and not MULTI_DIGIT.search(t) and bool(JAPANESE.search(t))
 TO_TEACHER = str.maketrans({",": "、", ".": "。", "?": "？", "!": "！"})
 
 
@@ -41,26 +55,35 @@ def read(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def teacher_text(transcript: str) -> str:
-    """The student's text (ASCII sentence punctuation, a space after a sentence) -> the teacher's input."""
-    return re.sub(r"\s+", "", transcript.translate(TO_TEACHER))
+def teacher_text(transcript: str, keep_word_spaces: bool = False) -> str:
+    """The student's text (ASCII sentence punctuation, a space after a sentence) -> the teacher's input.
+    keep_word_spaces keeps one space between two ASCII words ("Nintendo Switch", not "NintendoSwitch")."""
+    t = transcript.translate(TO_TEACHER)
+
+    def space(m: re.Match[str]) -> str:
+        a, b = t[m.start() - 1 : m.start()], t[m.end() : m.end() + 1]
+        return " " if keep_word_spaces and (a + b).isascii() and a.isalnum() and b.isalnum() else ""
+
+    return re.sub(r"\s+", space, t)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--set", default="num")
+    parser.add_argument("--kind", choices=("num", "latin"), default="num")
+    parser.add_argument("--set", default=None, help="set name (default: the kind)")
     parser.add_argument("--per-text", type=int, default=2, help="teacher voices per training sentence")
     parser.add_argument("--eval-texts", type=int, default=200)
     parser.add_argument("--min-sec", type=float, default=1.5)
     parser.add_argument("--max-sec", type=float, default=15.0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    args.set = args.set or args.kind
 
     kana = {r["id"]: r["kana"] for r in read(EMILIA / "asr_recheck_full.jsonl")}
     texts: dict[str, dict[str, Any]] = {}
     for r in read(EMILIA / "train_rechecked_yodas.jsonl"):
         t = r["transcript"]
-        if (MULTI_DIGIT.search(t) and not BROKEN_NUMBER.search(t) and r["id"] in kana
+        if (wanted(args.kind, t) and r["id"] in kana
                 and args.min_sec <= r["duration"] <= args.max_sec):
             texts.setdefault(t, r)  # one recording per sentence
     held_voices = {r["ref_speaker"] for r in read(Path("data/irodori_distill/mix/P2_s3_valid.jsonl"))}
@@ -81,13 +104,13 @@ def main() -> None:
         for t in train:
             r = texts[t]
             for v in rng.sample(voices, args.per_text):
-                row = {"id": f"syn_{args.set}_{i}", "text": teacher_text(t), **pool[v], "seed": rng.randrange(2**31),
+                row = {"id": f"syn_{args.set}_{i}", "text": teacher_text(t, args.kind == "latin"), **pool[v], "seed": rng.randrange(2**31),
                        "transcript": t, "old_kana": reading(t), "rec_kana": kana[r["id"]], "old_duration": r["duration"],
                        "text_from": r["id"]}
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 i += 1
     hours = sum(texts[t]["duration"] for t in train) * args.per_text / 3600
-    print(f"{len(texts)} sentences with a 2+ digit number; {len(train)} for training -> {i} rows "
+    print(f"{len(texts)} sentences ({args.kind}); {len(train)} for training -> {i} rows "
           f"({hours:.1f} h at the recordings' durations) -> {path}; {len(voices)} voices")
 
     release = sorted({(v["speaker"], v["gender"], v["prompt"]) for v in read(VOICES)})
@@ -98,7 +121,7 @@ def main() -> None:
         for j, t in enumerate(held):
             speaker, gender, prompt = release[j % len(release)]
             r = texts[t]
-            item = {"key": f"{speaker}_{r['id']}", "text": teacher_text(t), "speaker": speaker, "gender": gender,
+            item = {"key": f"{speaker}_{r['id']}", "text": teacher_text(t, args.kind == "latin"), "speaker": speaker, "gender": gender,
                     "rec_kana": kana[r["id"]], "prompt": prompt, "text_from": r["id"]}
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
             row = {"id": item["key"], "text": item["text"], "ref_wav": prompt, "seed": eval_rng.randrange(2**31)}

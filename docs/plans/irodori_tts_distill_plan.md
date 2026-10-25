@@ -1977,3 +1977,61 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
 - **W1k の途中**(DAC の残差の形、ゼロから): 15k で検証 mel 0.260、F0 誤差の中央値 4.7 cents、有声 0.95、4–6 kHz comb 1.06 dB。W1_main_d2 は 15k で 0.283 / 16 cents / 0.80 / 0.74 dB。
   - 収束は速い(W1_main_d2 の 25k ほどの水準)。倍音はまだ 1 dB 前後。30k で判断する。
 - **W1sm は 30k で止めた**: mel 0.280、F0 誤差の中央値 8.3 cents、comb 0.78 dB。W1_main_d2 の 30k は 0.254 / 3.5 cents / 1.01 dB。Snake の項を最初から入れても、倍音は出ず、収束が遅れるだけ。
+
+### 10/25 19:35: 数字は直った(HSn の wheel 版は voices の読みでリリースを越える)。英字の文も読めない(latin を作る)。Snake は高い F0 の音程を半分にするが、倍音は戻さない
+
+- **S1n(8 step、温度 0.7、CFG 1.5)**(`runs/irodori_distill/num_eval.sh`)
+  - num_eval の Kana-CER(書き起こしの読み): 教師 5.70%、S1h 18.25% → **S1n 11.49%**。教師の書き起こしを手本にすると 16.85 → 9.69%、完全一致 1 → 34%。
+  - jsut で 2 桁以上の数字を含む 8 文: S1h 14.34% → **S1n 0.72%**(教師 0.36、リリース 1.43)。７６５万９０００ → ナナヒャクロクジュウゴマンキュウセン。jsut 全体は 1.85 → 1.70%。
+  - 残る誤りは、4 桁の数(1695 → ヒャクロク…、1998 の順番)と、1 桁ずつ読むべき数字の列(1234 を教師はイチニサンヨン、S1n はセンニヒャク…)。
+  - S1n の GPU の sampling では、female_04 の 20 文のうち 9 文が途中で止まる。wheel 版では起きない。
+- **HSn(1 step、温度 0.9、EOS −1、GPU 版)と HS_s2h**
+
+| セット: 指標 | 教師 | HS_s2h | **HSn** |
+|---|---:|---:|---:|
+| Kana-CER num_eval / jsut / voices / jvs_bal | 5.70 / 1.77 / 1.18 / 2.05% | 21.41 / 2.10 / 1.97 / 2.72% | **10.91 / 2.01 / 1.33 / 2.21%** |
+| NISQA-TTS jsut / voices / jvs_bal(HS_s2h との差) | +0.186 / −0.128 / +0.176 | 0 | +0.019 / +0.044 / +0.043 |
+| 類似度 jsut / voices / jvs_bal | 0.708 / 0.779 / 0.712 | 0.608 / 0.756 / 0.642 | 0.606 / 0.755 / 0.646 |
+| 1 s 以上の間 jsut / voices(female_04) | 0.4% / 0.5%(0) | 2.9% / 6.0%(5) | 3.3% / 7.5%(10) |
+| comb 4–6k voices の女声 / female_02 / female_05 | 4.2 / 5.6 / 6.8 | 4.1 / 5.5 / 6.6 | 3.8 / 5.2 / 6.3 |
+
+  - 読みは全セットで上がる。NISQA と類似度は同じか少し上。倍音は 0.2〜0.3 dB 落ちる。
+  - female_04 の長い間が 5 → 10 文に増える。GPU 版の sampling の話(下の wheel 版では 0 → 3)。
+- **HSn の wheel 版**(HSn_wheel_w1w2_t09: HSn + W1w2 / W1e_d2、温度 0.9、EOS −1、`exp/irodori_distill/package/hsn_w1w2_t09`、公式 wheel 4.0.1、CPU)
+
+| セット: 指標 | リリース | HSh_wheel_w1w2_t09 | **HSn_wheel_w1w2_t09** |
+|---|---:|---:|---:|
+| Kana-CER num_eval(書き起こしの読み / 教師の書き起こし) | 5.31 / 2.44% | 15.95 / 14.73% | **6.78 / 5.34%** |
+| Kana-CER voices / jvs_bal / jsut | 1.28 / 2.01 / 2.05% | 1.82 / 2.23 / 2.04% | **1.20** / 2.33 / **1.92%** |
+| 類似度 voices / jvs_bal / jsut | 0.689 / 0.650 / 0.606 | 0.733 / 0.640 / 0.604 | 0.735 / 0.643 / 0.601 |
+| NISQA-TTS voices / jvs_bal / jsut | 3.699 / 4.201 / 4.127 | 3.845 / 4.004 / 4.090 | 3.792 / 4.034 / 4.106 |
+| NISQA-MOS voices / jvs_bal / jsut | 4.186 / 4.525 / 4.344 | 4.357 / 4.606 / 4.462 | 4.335 / 4.613 / 4.460 |
+| 1 s 以上の間 voices(female_04)/ jvs_bal / jsut | 0.0%(0)/ 0.0 / 0.1% | 2.0%(0)/ 1.0 / 2.4% | 2.5%(3)/ 1.0 / 2.7% |
+| comb 4–6k voices の女声 / female_02 / female_05 | 1.6 / 1.7 / 0.7 | 1.8 / 1.9 / 2.0 | 1.7 / 1.8 / 1.8 |
+| EOS が出ない文 num_eval | — | 7 / 200 | 3 / 200 |
+
+  - **wheel の候補を HSn + W1w2、温度 0.9 にする**。数字の読みはリリースの近くまで来た。voices と jsut の読みはリリースを越える。
+  - NISQA-TTS は voices で −0.053 ± 0.020(女声 −0.071)。jvs_bal と jsut は誤差の内か少し上。
+  - female_04 の長い間が 0 → 3 文。後の HSnl でも見る。
+  - 試聴ページ `exp/listening/num_wheel/`(ローカルのみ)。
+- **英字の文の読み**(`runs/irodori_distill/num_eval_base.sh latin`。latin_eval: 英字を含み 2 桁以上の数字を含まない Emilia-YODAS の文 200 本、10 声で 20 文ずつ)
+  - Kana-CER(教師の書き起こしの読みが手本): リリース 3.85%、**HSh_wheel 13.74%**。書き起こしの読み(pyopenjtalk)を手本にすると、教師 9.42、リリース 8.53、HSh 14.65%。pyopenjtalk は知らない単語を 1 字ずつ読むので、教師の書き起こしのほうを見る。
+  - 生徒は英単語を意味のない音にする(YouTube → ゴイドクノ…)、略語でない語を 1 字ずつ読む(RaspAP、BIOS ROMs)。英語だけの長い文では「コオコオ…」と止まらない。wheel 版で EOS が出ない文は、リリース 2、HSh 12 / 200。
+  - 原因は数字と同じ: 蒸留の文のうち英字を含むのは 0.3%。Emilia-YODAS では 10%。
+- **latin: 英字のデータ**(`scripts/teacher/num_rows.py --kind latin`)
+  - 英字と日本語を含み、2 桁以上の数字を含まない文。英単語の間の空白は 1 つ残す(数字のときは空白を全部詰めていた)。10,130 文。9,930 文 × 教師の声 2 つ = 19,860 行(46.3 h)、残り 200 文が latin_eval。
+  - QC(`scripts/teacher/qc.py --alt-field rec_kana --alt-max-cer 0.08` を足した): 書き起こしの読みと 0.05 以内、または録音の kana-whisper の読みと 0.08 以内なら通す。pyopenjtalk は英単語を 1 字ずつ読むので、正しく読んだ教師を落とす。
+  - 生成はこの機の GPU(`runs/irodori_distill/latin_pipeline.sh`、19:30 に 13k / 19.9k)。そのあと `runs/irodori_distill/latin_chain.sh` で S1nl(S1n 10k + latin、10k)→ S2nl(10k)→ HSnl(20k)、評価、wheel 版。`configs/train/S1nl.yaml` / `S2nl.yaml` / `HSnl.yaml`。
+- **W1k と W1ks の 30k**(DAC 型の残差の形、ゼロから。W1ks はさらに Snake)
+
+| 30k | 検証 mel | 検証 F0 誤差 p90 | 有声 | 4–6k comb | Anime の往復: F0 誤差 p90 / 1% を越えるフレーム / 有声 | y3hi: F0 p90 |
+|---|---:|---:|---:|---:|---:|---:|
+| W1_main_d2(30k) | 0.254 | 17.2 cents | 0.963 | 1.01 | — | — |
+| W1m_150k(参考) | 0.209 | 7.6 | 0.973 | 1.01 | 21.3 cents / 12.4% / 89.0% | 13.7 |
+| W1k | 0.238 | 9.1 | 0.967 | 1.03 | 30.0 / 15.0% / 91.2% | — |
+| **W1ks** | **0.219** | **6.9** | **0.976** | 0.94 | **14.1 / 7.2% / 93.1%** | **12.5** |
+
+  - 同じ形、同じ step で、Snake は高い F0 の音程の誤差を約半分にする。W1ks の 30k は W1 main の 150k を越える。
+  - 倍音はどれも戻らない。Anime の往復の 4–6 kHz comb はどれも 0.6〜0.7 dB(録音 5.5、DACVAE 5.8)。NISQA-TTS は W1ks ≈ W1m_150k。
+  - クリップ単位の裏返りの指標(有声の途切れ、F0 の跳び、subharmonic の量)は、soup4(裏返らない)と W1m_150k(裏返る)を分けられなかった。裏返りを直接測る指標はまだない。
+  - W1ks は galleria2 で 150k まで続ける(19:30 に 48k)。W1k はこの機で 30k から続けるが、latin の学習の後に回す(`runs/irodori_distill/w1k_resume.sh` は `W1k/PAUSE` で止まり、latin_chain.sh の最後で再開)。

@@ -1,0 +1,59 @@
+# S1nl: S1n 10k (S1h + num) continued with latin: 10% of Emilia-YODAS JA's sentences have Latin
+# letters (YouTube, USB, NHK, iPhone), 0.3% of the distillation's. latin: such transcripts without a 2+
+# digit number read by the teacher (scripts/teacher/num_rows.py --kind latin,
+# runs/irodori_distill/latin_pipeline.sh). Data: S1n_all's sets + latin (hi2, num and latin rows listed
+# twice); S1n's recipe, 10k steps.
+# Run with: uv run python scripts/train/train_student.py configs/train/S1nl.yaml
+ja_init_from: runs/irodori_distill/S1n_num/snapshots/step_00010000.safetensors
+ja_init_full: true
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
+ja_tail_frames: 12
+ja_text_aug: {multi_prob: 0.3, join_space_prob: 0.5, comma_space_prob: 0.1}
+ja_context_noise: {prob: 0.5, max_std: 0.5}
+model_config: configs/model/dv_24l_4k.yaml
+start_from_pretrained: false
+
+data:
+  train_jsonl: data/irodori_distill/mix/S1nl_all_train.jsonl  # S1n_all + latin (hi2, num, latin twice)
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 1e-4
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 500
+
+run_dir: runs/irodori_distill/S1nl
+batch_size: 16
+grad_accum_steps: 4        # effective 64, as the 6L
+max_steps: 10000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 60
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
+  - "山間部では,雪が50センチ以上降った."
+  - "USBケーブルでiPhoneをPCにつなぎます."

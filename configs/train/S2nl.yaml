@@ -1,0 +1,57 @@
+# S2nl: S2n 10k continued under S1nl 10k (S1n + latin, configs/train/S1nl.yaml) on S1nl's data: S2's
+# recipe (CFG 1.5 baked), the backbone from S2n 10k, the frozen heads S1nl's. 10k steps.
+# Run with: uv run python scripts/train/train_student.py configs/train/S2nl.yaml
+ja_init_from: runs/irodori_distill/S2n/snapshots/step_00010000.safetensors
+ja_latent_stats: data/irodori_distill/mix/P2_s3_stats.npz  # P2's, unchanged
+ja_tail_frames: 12
+ja_text_aug: {multi_prob: 0.3, join_space_prob: 0.5, comma_space_prob: 0.1}  # P3e's
+ja_context_noise: {prob: 0.5, max_std: 0.5}  # P3i's
+model_config: configs/model/dv_6l_4k.yaml
+start_from_pretrained: false
+distill_cfg_coef: 1.5
+distill_teacher_config: configs/model/dv_24l_4k.yaml
+distill_teacher_weights: runs/irodori_distill/S1nl/snapshots/step_00010000.safetensors
+
+data:
+  train_jsonl: data/irodori_distill/mix/S1nl_all_train.jsonl  # S1nl's: S1n's + latin twice
+  valid_jsonl: data/irodori_distill/mix/P2_s3_valid.jsonl  # P2's
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 30.0
+  prompt_trim_max_sec: 0.0   # the whole reference, as the teacher saw it
+  final_punct_dropout: 0.3
+  loader_procs: 3
+  num_bucket_batches: 5
+  precompute: false
+
+flow:
+  type: lsd
+  kwargs: {}
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+# no CFG dropout: the targets are fully conditioned and the student never runs a null branch
+text_dropout: 0.0
+voice_dropout: 0.0
+
+optim:
+  lr: 2e-4                 # half of D1's: a continuation
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 500
+
+run_dir: runs/irodori_distill/S2nl
+batch_size: 16
+grad_accum_steps: 4        # effective 64; at 25 Hz batch 16 peaks near 15 GB (P2a)
+max_steps: 10000
+stats_ema_steps: 0         # fixed statistics (ja_latent_stats)
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+num_valid_batches: 60
+ckpt_freq: 5000
+num_ckpt_keep: 2
+sample_freq: 2500
+sample_cfg_coef: 1.0      # the student is sampled without CFG
+sample_sentences:
+  - "こんにちは. 今日はとても良い天気ですね."
+  - "切手を買ってから,学校へ向かいました."
+  - "この資料を,もう一度確認してください."
