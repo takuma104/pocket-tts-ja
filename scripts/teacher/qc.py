@@ -9,7 +9,8 @@ clip came out) are dropped rather than re-checked.
 
 --alt-field FIELD also passes a row whose transcript is within --alt-max-cer of the row's FIELD
 (latin: ``rec_kana``, the reading of the original recording, for the words pyopenjtalk spells
-letter by letter in ``old_kana``).
+letter by letter in ``old_kana``). --spell-letters turns the Latin letters pyopenjtalk leaves in
+``old_kana`` as they are (N, A, E1) into their names (エヌ, エー) before the comparison.
 
     uv run python scripts/teacher/qc.py data/irodori_distill/teacher s3
     -> <root>/<set>/qc.jsonl (id, cer_old, pass) and a summary
@@ -17,12 +18,20 @@ letter by letter in ``old_kana``).
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import numpy as np
 from rapidfuzz.distance import Levenshtein
 
 from pocket_tts_ja.kana import canonical_kana
+
+LETTER_NAMES = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "エー ビー シー ディー イー エフ ジー エイチ アイ ジェー ケー エル エム "
+                        "エヌ オー ピー キュー アール エス ティー ユー ブイ ダブリュー エックス ワイ ゼット".split()))
+
+
+def spell_letters(kana: str) -> str:
+    return re.sub(r"[A-Za-z]", lambda m: LETTER_NAMES[m.group().upper()], kana)
 
 
 def main() -> None:
@@ -32,6 +41,7 @@ def main() -> None:
     parser.add_argument("--max-cer", type=float, default=0.02)
     parser.add_argument("--alt-field", default=None, help="a second reference reading in the rows")
     parser.add_argument("--alt-max-cer", type=float, default=0.08)
+    parser.add_argument("--spell-letters", action="store_true", help="read the Latin letters left in old_kana")
     args = parser.parse_args()
 
     rows = [json.loads(line) for line in open(args.root / f"rows_{args.set}.jsonl", encoding="utf-8")]
@@ -44,7 +54,7 @@ def main() -> None:
             if r["id"] not in asr:
                 missing += 1
                 continue
-            old = canonical_kana(r["old_kana"])
+            old = canonical_kana(spell_letters(r["old_kana"]) if args.spell_letters else r["old_kana"])
             new = canonical_kana(asr[r["id"]])
             cer = Levenshtein.distance(old, new) / max(len(old), 1)
             cers.append(cer)
