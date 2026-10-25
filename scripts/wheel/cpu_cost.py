@@ -11,12 +11,14 @@ Runs in the stock wheel's own environment, one process with --threads torch thre
   --items texts of the set with one prompt, seconds of compute per second of audio, for each
   --steps (sampler_decode_steps) with the package's decoder;
 - the decoder alone: the package's latents of a 10 s utterance decoded frame by frame as the wheel
-  streams them, for each --decoders NFxK (decoder_seanet n_filters x n_residual_layers; random
-  weights for a size the package does not have: the cost does not depend on the values).
+  streams them, for each --decoders NFxK[kR][dD][cC] (decoder_seanet n_filters x n_residual_layers,
+  optionally residual_kernel_size R, dilation_base D and compress C; random weights for a size the
+  package does not have: the cost does not depend on the values).
 """
 
 import argparse
 import json
+import re
 import time
 from pathlib import Path
 
@@ -45,11 +47,14 @@ def generation_rtf(config: str, items: list[dict], steps: int, seed: int) -> tup
 
 def decoder_rtf(config: str, size: str, frames: int) -> float:
     model = TTSModel.load_model(config=config)
-    n_filters, k = (int(v) for v in size.split("x"))
+    m = re.fullmatch(r"(\d+)x(\d+)(?:k(\d+))?(?:d(\d+))?(?:c(\d+))?", size)
+    assert m, size
     cfg = model.config.mimi.model_dump()
     dec = dict(cfg["decoder_seanet"] or cfg["seanet"])
-    if (dec["n_filters"], dec["n_residual_layers"]) != (n_filters, k):
-        cfg["decoder_seanet"] = {**dec, "n_filters": n_filters, "n_residual_layers": k}
+    keys = ("n_filters", "n_residual_layers", "residual_kernel_size", "dilation_base", "compress")
+    want = {**dec, **{k: int(v) for k, v in zip(keys, m.groups()) if v is not None}}
+    if want != dec:
+        cfg["decoder_seanet"] = want
         model.mimi = build_mimi(MimiConfig(**cfg)).eval()
         stamp_state_names(model)
     mimi = model.mimi

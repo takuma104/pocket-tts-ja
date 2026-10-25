@@ -9,10 +9,13 @@ are averaged; any other tensor must be the same in every input.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import safetensors.torch
 import torch
+
+from pocket_tts_ja.wheel_codec import file_decoder_knobs
 
 
 def main() -> None:
@@ -33,7 +36,10 @@ def main() -> None:
             assert all(torch.equal(t, ts[0]) for t in ts), k
             soup[k] = ts[0]
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    safetensors.torch.save_file(soup, str(args.out))
+    knobs = {json.dumps(file_decoder_knobs(p), sort_keys=True) for p in args.inputs}
+    assert len(knobs) == 1, "the decoders have different residual blocks"
+    meta = knobs.pop()
+    safetensors.torch.save_file(soup, str(args.out), metadata={"decoder_knobs": meta} if meta != "{}" else None)
     spread = max(float((s[k].float() - soup[k].float()).norm() / soup[k].float().norm().clamp_min(1e-12))
                  for s in states for k in keys if soup[k].is_floating_point())
     print(f"{args.out}: {len(states)} decoders, {len(soup)} tensors, largest relative distance to the soup {spread:.4f}")

@@ -50,6 +50,10 @@ run starts from exactly that decoder's output) and the added blocks learn at --l
 it from the same section): the initial decoder is widened (pocket_tts_ja.wheel_codec.widen_decoder,
 net2wider with a little noise on the added channels, so the run starts within a percent of that
 decoder's output) and the whole SEANet decoder learns at --lr-fresh.
+--scratch trains the SEANet decoder from its random initialisation (the decoder transformer still
+starts from the stock weights; the whole SEANet learns at --lr-fresh), at any size and with other
+residual blocks: --res-kernel, --dilation-base and --compress (the stock wheel reads them from the
+config's mimi.decoder_seanet too; the decoder files keep them in their metadata, wheel_codec.save_decoder).
 --snake gives every ELU of the SEANet decoder Snake's periodic term (pocket_tts_ja.wheel_codec.SnakeELU,
 DACVAE's own activation; the stock wheel cannot load it: plan W2). With --init from an ELU decoder the
 terms start at zero, so the run starts from exactly that decoder's output; they learn at --lr-snake.
@@ -70,7 +74,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import safetensors.torch
 import soundfile as sf
 import torch
 import torchaudio.functional as AF
@@ -95,10 +98,10 @@ from pocket_tts_ja.wheel_codec import (
     decoder_filters,
     decoder_named_parameters,
     decoder_res_layers,
-    decoder_state,
     deepen_decoder,
     is_added,
     is_snake,
+    save_decoder,
     widen_decoder,
 )
 
@@ -107,7 +110,8 @@ from hf_structure import N_FFT, band_stats, refine_f0, spectrum, voiced_f0  # no
 from spectral_lines import contrast, ltas  # noqa: E402
 
 SR = 24000
-STOCK_FILTERS = load_pocket_config().mimi.seanet.n_filters
+STOCK = load_pocket_config().mimi.seanet
+STOCK_FILTERS = STOCK.n_filters
 HOP = DV_HOP * SR // DV_SR  # 960 samples per 25 Hz frame
 
 
@@ -236,6 +240,10 @@ def main() -> None:
     parser.add_argument("--init", type=Path, default=None, help="checkpoint.pt of a run to fine-tune from")
     parser.add_argument("--res-layers", type=int, default=1, help="residual blocks per SEANet decoder stage (> 1 needs --init)")
     parser.add_argument("--filters", type=int, default=STOCK_FILTERS, help="n_filters of the SEANet decoder (wider needs --init)")
+    parser.add_argument("--scratch", action="store_true", help="the SEANet decoder from random weights (any size)")
+    parser.add_argument("--res-kernel", type=int, default=STOCK.residual_kernel_size, help="residual blocks' kernel")
+    parser.add_argument("--dilation-base", type=int, default=STOCK.dilation_base, help="block j of a stage dilates by base**j")
+    parser.add_argument("--compress", type=int, default=STOCK.compress, help="residual blocks' channel compression")
     parser.add_argument("--snake", action="store_true", help="Snake's periodic term on the SEANet decoder's ELUs (not stock)")
     parser.add_argument("--lr-snake", type=float, default=5e-4, help="the Snake terms")
     parser.add_argument("--snake-beta0", type=float, default=0.0, help="the Snake terms' start without --init")
@@ -267,10 +275,15 @@ def main() -> None:
     clips, max_context = rescan()
 
     ckpt = args.run_dir / "checkpoint.pt"
-    stock_size = args.res_layers == 1 and args.filters == STOCK_FILTERS
-    assert stock_size or args.init is not None or ckpt.exists(), "a deeper or wider decoder starts from --init"
-    mimi = build_dv_mimi(init_stock=stock_size, decoder_res_layers=args.res_layers,
-                         decoder_filters=args.filters, snake=args.snake).to(device).train()
+    knobs = {k: v for k, v in (("residual_kernel_size", args.res_kernel), ("dilation_base", args.dilation_base),
+                               ("compress", args.compress)) if v != getattr(STOCK, k)}
+    stock_size = args.res_layers == 1 and args.filters == STOCK_FILTERS and not knobs
+    assert stock_size or args.scratch or args.init is not None or ckpt.exists(), \
+        "a deeper or wider decoder starts from --init, other residual blocks from --scratch"
+    assert not (args.scratch and args.init is not None), "--scratch or --init"
+    mimi = build_dv_mimi(init_stock=stock_size or args.scratch, decoder_res_layers=args.res_layers,
+                         decoder_filters=args.filters, snake=args.snake, decoder_knobs=knobs,
+                         stock_seanet=not args.scratch).to(device).train()
     named = decoder_named_parameters(mimi)
     for p in mimi.parameters():
         p.requires_grad_(False)
@@ -283,7 +296,7 @@ def main() -> None:
                     p.fill_(args.snake_beta0)
 
     def is_fresh(name: str) -> bool:
-        widened = args.filters != STOCK_FILTERS and name.startswith("decoder.")
+        widened = (args.filters != STOCK_FILTERS or args.scratch) and name.startswith("decoder.")
         return name.split(".")[0] in FRESH_MODULES or is_added(name, args.res_layers) or widened
 
     fresh = [p for n, p in named if is_fresh(n) and not is_snake(n)]
@@ -400,7 +413,7 @@ def main() -> None:
                 res = validate(mimi, codec, val, args.run_dir / "val" / f"{step:08d}" / name, mel, args.delay, device)
                 vrow.update({f"{name}_{k}": round(v, 3) for k, v in res.items()})
             if step % args.save_every == 0 or step == args.max_steps:
-                safetensors.torch.save_file(decoder_state(mimi), str(args.run_dir / f"decoder_step_{step:08d}.safetensors"))
+                save_decoder(mimi, args.run_dir / f"decoder_step_{step:08d}.safetensors")
             ema.swap(named)
             mimi.train()
             print(json.dumps(vrow), flush=True)

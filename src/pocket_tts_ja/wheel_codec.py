@@ -12,13 +12,18 @@ The SEANet decoder can have more residual blocks per upsampling stage than the s
 trained decoder is deepened with ``deepen_decoder``: every new block ends in a zeroed 1x1 conv, so
 the deeper decoder starts out computing exactly what the shallower one did. It can also be wider
 (``decoder_filters``, the SEANet's n_filters; the stock wheel reads it from the same section): a
-trained decoder is widened with ``widen_decoder`` (net2wider).
+trained decoder is widened with ``widen_decoder`` (net2wider). The residual blocks' kernel, dilation
+base and compression (``decoder_knobs``, also read by the stock wheel from that section) differ from
+the stock ones only in a decoder trained from scratch (``stock_seanet=False``: the decoder transformer
+still starts from the stock weights). Such a decoder's file carries them in its safetensors metadata
+(``save_decoder``), since the weights alone do not tell the dilation.
 
 Not for the stock wheel (plan W2): ``snake=True`` gives every ELU of the SEANet decoder Snake's
 periodic term (``SnakeELU``), the activation of DACVAE's own decoder. The term starts at zero, so a
 trained ELU decoder fitted with it starts out unchanged.
 """
 
+import json
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -38,22 +43,52 @@ from training.modules.utils import stamp_state_names
 
 DECODER_MODULES = ("quantizer", "upsample", "decoder_transformer", "decoder")
 FRESH_MODULES = ("quantizer", "upsample")
+DECODER_KNOBS = ("residual_kernel_size", "dilation_base", "compress")
 # "<prefix>decoder.model.<index>.<rest>": a tensor of the SEANet decoder's layer list
 _DECODER_LAYER = re.compile(r"^(.*?(?<![a-z_])decoder\.model\.)(\d+)(\..*)$")
 
 
 def dv_mimi_config(
-    frame_rate: float = 25.0, latent_dim: int = 32, decoder_res_layers: int = 1, decoder_filters: int | None = None
+    frame_rate: float = 25.0, latent_dim: int = 32, decoder_res_layers: int = 1, decoder_filters: int | None = None,
+    decoder_knobs: dict[str, int] | None = None,
 ) -> MimiConfig:
     config = load_pocket_config().mimi.model_dump()
     config["frame_rate"] = frame_rate
     config["quantizer"]["dimension"] = latent_dim
     config["inner_dim"] = latent_dim
     seanet = config["seanet"]
-    filters = decoder_filters or seanet["n_filters"]
-    if (decoder_res_layers, filters) != (seanet["n_residual_layers"], seanet["n_filters"]):
-        config["decoder_seanet"] = {**seanet, "n_residual_layers": decoder_res_layers, "n_filters": filters}
+    assert set(decoder_knobs or {}) <= set(DECODER_KNOBS), decoder_knobs
+    dec = {**seanet, "n_residual_layers": decoder_res_layers, "n_filters": decoder_filters or seanet["n_filters"],
+           **(decoder_knobs or {})}
+    if dec != seanet:
+        config["decoder_seanet"] = dec
     return MimiConfig(**config)
+
+
+def decoder_knobs(mimi: MimiModel) -> dict[str, int]:
+    """The residual-block settings of ``mimi``'s SEANet decoder that differ from the stock ones."""
+    stock = load_pocket_config().mimi.seanet
+    blocks = [m for m in mimi.decoder.model if isinstance(m, SEANetResnetBlock)]
+    first = blocks[0].block[1].conv  # each block: ELU, dilated conv (dim -> dim / compress), ELU, 1x1 conv
+    per_stage = len(blocks) // len(stock.ratios)
+    knobs = {
+        "residual_kernel_size": first.kernel_size[0],
+        "dilation_base": blocks[1].block[1].conv.dilation[0] if per_stage > 1 else stock.dilation_base,
+        "compress": first.in_channels // first.out_channels,
+    }
+    return {k: v for k, v in knobs.items() if v != getattr(stock, k)}
+
+
+def file_decoder_knobs(path: Path) -> dict[str, int]:
+    """``decoder_knobs`` as saved in a decoder file's metadata (none: the stock ones)."""
+    with safetensors.safe_open(str(path), framework="pt") as f:
+        meta = f.metadata() or {}
+    return json.loads(meta.get("decoder_knobs", "{}"))
+
+
+def save_decoder(mimi: MimiModel, path: Path) -> None:
+    knobs = decoder_knobs(mimi)
+    safetensors.torch.save_file(decoder_state(mimi), str(path), metadata={"decoder_knobs": json.dumps(knobs)} if knobs else None)
 
 
 def decoder_res_layers(names: Iterable[str]) -> int:
@@ -237,13 +272,19 @@ def snake_decoder(mimi: MimiModel) -> None:
 
 def build_dv_mimi(
     frame_rate: float = 25.0, latent_dim: int = 32, init_stock: bool = True, decoder_res_layers: int = 1,
-    decoder_filters: int | None = None, snake: bool = False,
+    decoder_filters: int | None = None, snake: bool = False, decoder_knobs: dict[str, int] | None = None,
+    stock_seanet: bool = True,
 ) -> MimiModel:
-    """The decode side for DACVAE latents; decoder transformer and SEANet from the stock Mimi."""
-    mimi = build_mimi(dv_mimi_config(frame_rate, latent_dim, decoder_res_layers, decoder_filters))
+    """The decode side for DACVAE latents; decoder transformer and SEANet from the stock Mimi.
+
+    ``stock_seanet=False`` leaves the SEANet decoder at its random initialisation (any size).
+    """
+    mimi = build_mimi(dv_mimi_config(frame_rate, latent_dim, decoder_res_layers, decoder_filters, decoder_knobs))
     if init_stock:
-        assert decoder_res_layers == 1, "a deeper decoder starts from a trained one (deepen_decoder)"
-        assert decoder_filters in (None, load_pocket_config().mimi.seanet.n_filters), "a wider one too (widen_decoder)"
+        if stock_seanet:
+            assert decoder_res_layers == 1, "a deeper decoder starts from a trained one (deepen_decoder)"
+            assert decoder_filters in (None, load_pocket_config().mimi.seanet.n_filters), "a wider one too (widen_decoder)"
+            assert not decoder_knobs, "other residual blocks start from scratch (stock_seanet=False)"
         stock = load_pocket_config()
         assert stock.weights_path is not None
         state = safetensors.torch.load_file(download_if_necessary(str(stock.weights_path)))
@@ -251,6 +292,8 @@ def build_dv_mimi(
         for name, tensor in state.items():
             key = name.removeprefix("mimi.")
             if not name.startswith("mimi.") or key.split(".")[0] in FRESH_MODULES:
+                continue
+            if not stock_seanet and key.split(".")[0] == "decoder":
                 continue
             if key in own and own[key].shape == tensor.shape:
                 own[key].copy_(tensor)
@@ -277,7 +320,8 @@ def decoder_state(mimi: MimiModel) -> dict[str, torch.Tensor]:
 def load_dv_decoder(path: Path, device: torch.device, frame_rate: float = 25.0, latent_dim: int = 32) -> MimiModel:
     state = safetensors.torch.load_file(str(path))
     mimi = build_dv_mimi(frame_rate, latent_dim, init_stock=False, decoder_res_layers=decoder_res_layers(state),
-                         decoder_filters=decoder_filters(state), snake=any(map(is_snake, state)))
+                         decoder_filters=decoder_filters(state), snake=any(map(is_snake, state)),
+                         decoder_knobs=file_decoder_knobs(path))
     own = mimi.state_dict()
     for name, tensor in state.items():
         own[name.removeprefix("mimi.")].copy_(tensor)
