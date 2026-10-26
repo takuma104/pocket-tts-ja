@@ -40,6 +40,11 @@ without it, at the local files, to test with the wheel first:
         --voice prompt.wav --text "こんにちは。"
 
 The result is loaded once with the stock loader (strict) as a check.
+
+A decoder with Snake's term (train_decoder.py --snake: an alpha and a beta per channel before every
+conv) does not fit the stock SEANet, which hard-codes ELU (W2 would add the option). Its alpha / beta go
+to <name>/snake.safetensors instead, which only wheel_generate.py --snake reads (an internal preview of
+W2): the stock loader alone builds the decoder without them, and its audio is wrong.
 """
 
 import argparse
@@ -52,7 +57,7 @@ import torch
 import yaml
 
 from pocket_tts.models.tts_model import TTSModel
-from pocket_tts_ja.wheel_codec import decoder_filters, decoder_res_layers, file_decoder_knobs
+from pocket_tts_ja.wheel_codec import decoder_filters, decoder_res_layers, file_decoder_knobs, is_snake
 
 DECODE_SIDE = ("quantizer", "upsample", "decoder_transformer", "decoder")
 ENCODE_SIDE = ("encoder", "encoder_transformer", "downsample")
@@ -103,6 +108,8 @@ def main() -> None:
     flow = {k: v for k, v in safetensors.torch.load_file(str(args.snapshot)).items()}
     assert flow and all(k.startswith("flow_lm.") for k in flow), args.snapshot
     decode = side(args.decoder, DECODE_SIDE)
+    snake = {k: v for k, v in decode.items() if is_snake(k)}
+    decode = {k: v for k, v in decode.items() if not is_snake(k)}
     state = {**flow, **decode, **side(args.encoder, ENCODE_SIDE)}
     seanet = cfg["mimi"]["seanet"]
     k, nf = decoder_res_layers(decode), decoder_filters(decode)
@@ -115,6 +122,8 @@ def main() -> None:
     weights_dir.mkdir(parents=True, exist_ok=True)
     weights = weights_dir / "model.safetensors"
     safetensors.torch.save_file(state, str(weights))
+    if snake:
+        safetensors.torch.save_file({k: v.float().contiguous() for k, v in snake.items()}, str(weights_dir / "snake.safetensors"))
     tokenizer = args.out / "tokenizer.model"
     shutil.copyfile(cfg["flow_lm"]["lookup_table"]["tokenizer_path"], tokenizer)
 
@@ -153,6 +162,8 @@ def main() -> None:
     print(f"{config_path}")
     print(f"{weights}  {weights.stat().st_size / 1e6:.1f} MB  sha256 {sha256(weights)[:16]}")
     print(f"{tokenizer}  sha256 {sha256(tokenizer)[:16]}")
+    if snake:
+        print(f"{weights_dir / 'snake.safetensors'}  {len(snake)} tensors: Snake's term, for wheel_generate.py --snake only")
 
 
 if __name__ == "__main__":

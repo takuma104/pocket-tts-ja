@@ -2155,3 +2155,52 @@ GPU は本機の RTX 5090 1 枚だけを前提にする(galleria2 は使わな�
   - **W1ks2**: W1ks 150k を HSnl の GTA で 20k step(W1w2 の手順、Snake の項は 1e-4)。galleria2 の `runs/irodori_distill/w1ks2.sh` が W1ks の終わり(09:30 ごろ)を待って始める。評価は本機の `runs/irodori_distill/w1ks_final.sh`(往復、HSnl の潜在、試聴ページ `exp/listening/w1ks_final/` と `exp/listening/w1ks_students/`)。
   - 試聴ページ `exp/listening/w1ks_recon120/`(ローカルのみ)。
   - Snake の decoder は公式 wheel 4.0.1 では読めない。使うには W2 が要る(pocket-tts の SEANet に、ELU に Snake の項を足した活性化を選べるオプションを足す PR。各チャネルに alpha / beta の 2 つのパラメータ。DACVAE の decoder を丸ごと積むよりずっと小さい変更)。外に出すので、ユーザーに相談する。
+
+### 10/26 10:30: 間の長い行を除いてやり直した HSnlf で、female_04 の長い間が wheel 版で 6 → 0 / 20 文。読みと NISQA は HSnl と同じなので、wheel の候補を HSnlf にする。Snake の decoder を wheel で動かす内部の試し(W2 の下見)を用意した
+
+- **HSnlf**(S1nl_pf 3k の下で S2nl 10k から S2nlf 5k、その上で HSnlf 20k。学習データは S1nlf_all。`runs/irodori_distill/pf_chain.sh`)
+- **GPU 版**(1 step、温度 0.9、EOS −1)と HSnl
+
+| セット: 指標 | 教師 | HSnl | **HSnlf** |
+|---|---:|---:|---:|
+| Kana-CER latin_eval / num_eval(教師の書き起こし) | — | 9.44 / 8.50% | **7.63 / 5.91%** |
+| Kana-CER jsut / voices / jvs_bal | 1.77 / 1.18 / 2.05% | 2.10 / 1.20 / 2.21% | 2.10 / 1.26 / 2.33% |
+| NISQA-TTS jsut / voices / jvs_bal(HSnl との差) | +0.186 / −0.174 / +0.132 | 0 | +0.011 ± 0.006 / −0.009 ± 0.018 / −0.031 ± 0.023 |
+| 類似度 jsut / voices / jvs_bal | 0.708 / 0.779 / 0.712 | 0.607 / 0.759 / 0.647 | 0.606 / 0.764 / 0.643 |
+| 1 s 以上の間 jsut / voices(female_04) | 0.4% / 0.5%(0) | 3.3% / 10.0%(14) | **1.5% / 3.0%(3)** |
+| comb 4–6k voices の女声 / female_02 / female_05 | 4.2 / 5.6 / 6.8 | 3.9 / 5.2 / 6.7 | 4.0 / 5.3 / 6.9 |
+
+- **wheel 版**(HSnlf_wheel_w1w2_t09: HSnlf + W1w2 / W1e_d2、温度 0.9、EOS −1、`exp/irodori_distill/package/hsnlf_w1w2_t09`、sha dbee3c6113392337、公式 wheel 4.0.1、CPU)
+
+| セット: 指標 | リリース | HSnl_wheel_w1w2_t09 | **HSnlf_wheel_w1w2_t09** |
+|---|---:|---:|---:|
+| Kana-CER latin_eval / num_eval(教師の書き起こし) | 3.85 / 2.44% | 5.22 / 4.03% | 5.30 / 3.98% |
+| Kana-CER voices / jvs_bal / jsut | 1.28 / 2.01 / 2.05% | 1.17 / 2.15 / 1.90% | 1.13 / 2.27 / 1.95% |
+| 類似度 voices / jvs_bal / jsut | 0.689 / 0.650 / 0.606 | 0.736 / 0.639 / 0.608 | 0.736 / 0.638 / 0.603 |
+| NISQA-TTS voices / jvs_bal / jsut(HSnl との差) | −0.090 / +0.159 / +0.018 | 0 | −0.007 ± 0.020 / −0.003 ± 0.021 / +0.002 ± 0.006 |
+| NISQA-MOS voices / jvs_bal / jsut(HSnl との差) | −0.120 / −0.035 / −0.135 | 0 | +0.022 ± 0.026 / +0.002 ± 0.019 / −0.014 ± 0.009 |
+| 1 s 以上の間 voices(female_04)/ jvs_bal / jsut | 0.0%(0)/ 0.0 / 0.1% | 5.0%(6)/ 1.0 / 2.8% | **1.0%(0)/ 0.0 / 1.0%** |
+| 間の中央値 / p90 voices | 0.42 / 0.60 s | 0.46 / 0.78 | 0.46 / 0.70 |
+| comb 4–6k voices の女声 / female_02 / female_05 | 1.6 / 1.7 / 0.7 | 1.7 / 1.9 / 1.9 | 1.7 / 2.0 / 1.8 |
+| EOS が出ない文 latin_eval / num_eval(200 文ずつ) | 2 / — | 2 / 3 | 1 / 2 |
+
+- jsut は 1 声 230〜260 文あるので、1 s 以上の間がある文を声ごとに数えた(wheel 版):
+
+| jsut の声 | リリース | HSnl_wheel | **HSnlf_wheel** |
+|---|---:|---:|---:|
+| jvs006(263 文) | 1 | 14 | **6** |
+| jvs007(252) | 0 | 7 | **2** |
+| jvs041(258) | 0 | 7 | **2** |
+| jvs066(227) | 0 | 0 | 0 |
+
+  - **wheel の候補を HSnlf + W1w2、温度 0.9 にする**(sha dbee3c6113392337)。
+    - 長い間は、voices で 5.0 → 1.0%(female_04 は 6 → 0)、jsut で 2.8 → 1.0% に減った。HSnlf でもまだリリース(0.1%)より多いが、声ごとに見ても 1/3 前後に減っている。
+    - 読み、NISQA、類似度、倍音は HSnl と誤差の内。
+  - GPU 版では英字と数字の読みも上がった(latin 9.44 → 7.63%、num 8.50 → 5.91%)。ただし wheel 版では HSnl と同じだった。wheel 版の CER の大半は wheel 側の文の分け方などから来ていて、FlowLM の差が埋もれるのかもしれない。
+  - 試聴ページ `exp/listening/pf_wheel/`(ローカルのみ)。
+- **W1k**(W1ks と同じ形で Snake なし、no-Snake の対照)は HSnlf の学習の後に再開した。検証の teacher_comb46 は 70k で 1.22。同じ step の W1ks は 1.50 で、W1ks が上がり始めたのは 85k〜110k。W1k も上がるなら、W2 なしで公式 wheel に載せられる。100k(13:30 ごろ)までに判断する。
+- **W2 の下見(内部のみ)**
+  - `scripts/wheel/package_w1.py`: Snake の項付きの decoder を渡すと、alpha / beta を `<name>/snake.safetensors` に分けて書く。model.safetensors は公式の loader でそのまま(strict で)読める。
+  - `scripts/wheel/wheel_generate.py --snake`: 公式の loader で組んだ後に、alpha / beta がある ELU を SnakeELU(forward だけ)に差し替える。W2 が入ったときの wheel と同じ計算になる。
+  - 確認: W1ks 150k で同じ latent を decode すると、本機のコードと wheel + `--snake` の出力は完全に一致した(最大差 0.0)。`--snake` なしの wheel では大きく違う(最大差 0.70、振幅 0.67)。だから Snake の decoder は、公式 wheel だけでは使えない。
+  - `runs/irodori_distill/w2_preview.sh`: W1ks2 が届いたら HSnlf + W1ks2 を `--snake` で wheel に通す。voices / jvs_bal / jsut で HSnlf_wheel_w1w2_t09 と比べ、試聴ページ `exp/listening/w2_preview/` を作る。乱数の種と文の順番は候補と同じなので、潜在は同じになり、違いは decoder だけ。

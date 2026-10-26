@@ -13,6 +13,10 @@ Reads <eval dir>/items.jsonl (key, text, prompt wav), writes <eval dir>/<name>/<
 the wheel's 24 kHz) and appends one row per item to <eval dir>/<name>.jsonl: the frames, whether
 every chunk the stock code split the text into ended on EOS ("eos"), the chunk count and the
 generation time. Items that already have a wav are skipped.
+
+--snake <package>/<name>/snake.safetensors (package_w1.py, from a decoder trained with Snake's term)
+puts each alpha / beta pair back on the ELU it belongs to after the stock loader has built the model:
+an internal preview of W2 (the stock SEANet hard-codes ELU), not something the wheel can do itself.
 """
 
 import argparse
@@ -24,7 +28,9 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io.wavfile
+import safetensors.torch
 import torch
+import torch.nn.functional as F
 import yaml
 
 NO_EOS_MESSAGE = "Maximum generation length reached without EOS"
@@ -46,7 +52,33 @@ class Counter(logging.Handler):
             self.chunks += 1
 
 
-def work(config: str, eval_dir: str, name: str, shard: int, shards: int, threads: int, seed: int) -> None:
+class SnakeELU(torch.nn.Module):
+    """elu(x) + beta sin^2(alpha x) / alpha per channel (pocket_tts_ja.wheel_codec.SnakeELU, forward only)."""
+
+    def __init__(self, alpha: torch.Tensor, beta: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("alpha", alpha)
+        self.register_buffer("beta", beta)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.elu(x) + self.beta * torch.sin(self.alpha * x).pow(2) / (self.alpha + 1e-9)
+
+
+def add_snake(model: torch.nn.Module, path: str) -> None:
+    """Swaps every ELU that `path` has an alpha / beta for (named as in the model's state dict)."""
+    terms = safetensors.torch.load_file(path)
+    swapped = 0
+    for parent_name, parent in list(model.named_modules()):
+        for child_name, child in list(parent.named_children()):
+            full = f"{parent_name}.{child_name}" if parent_name else child_name
+            if isinstance(child, torch.nn.ELU) and f"{full}.alpha" in terms:
+                setattr(parent, child_name, SnakeELU(terms[f"{full}.alpha"].float(), terms[f"{full}.beta"].float()))
+                swapped += 1
+    assert 2 * swapped == len(terms), (swapped, len(terms))
+
+
+def work(config: str, eval_dir: str, name: str, shard: int, shards: int, threads: int, seed: int,
+         snake: str | None = None) -> None:
     from pocket_tts import TTSModel
 
     torch.set_num_threads(threads)
@@ -62,6 +94,8 @@ def work(config: str, eval_dir: str, name: str, shard: int, shards: int, threads
     items = [json.loads(line) for line in open(root / "items.jsonl", encoding="utf-8")][shard::shards]
     items = [it for it in items if not (out / f"{it['key']}.wav").exists()]
     model = TTSModel.load_model(config=config)
+    if snake:
+        add_snake(model, snake)
     frame = round(model.sample_rate / model.config.mimi.frame_rate)
     states: dict[str, dict] = {}
     with open(root / f"{name}.jsonl", "a", encoding="utf-8") as log:
@@ -96,13 +130,14 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--threads", type=int, default=2, help="torch threads per worker")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--snake", default=None, help="snake.safetensors of the package (W2 preview)")
     args = parser.parse_args()
 
     (args.eval_dir / args.name).mkdir(exist_ok=True)
     start = time.monotonic()
     ctx = multiprocessing.get_context("spawn")
     procs = [
-        ctx.Process(target=work, args=(args.config, str(args.eval_dir), args.name, i, args.workers, args.threads, args.seed))
+        ctx.Process(target=work, args=(args.config, str(args.eval_dir), args.name, i, args.workers, args.threads, args.seed, args.snake))
         for i in range(args.workers)
     ]
     for p in procs:
